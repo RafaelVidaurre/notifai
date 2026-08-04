@@ -1,0 +1,30 @@
+{
+  "name": "@notifai/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Send native phone notifications from agents and local programs",
+  "bin": {
+    "notifai": "dist/main.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@notifai/protocol": "workspace:*",
+    "commander": "^14.0.0",
+    "smol-toml": "^1.4.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.0",
+    "vitest": "^3.2.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

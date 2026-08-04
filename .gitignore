@@ -1,0 +1,15 @@
+# Node / TypeScript
+node_modules/
+dist/
+*.tsbuildinfo
+coverage/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Local NotifAI project configuration written by `notifai init`
+.notifai/
+
+.DS_Store

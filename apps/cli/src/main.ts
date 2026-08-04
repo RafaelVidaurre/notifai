@@ -1,0 +1,299 @@
+#!/usr/bin/env node
+import { readFileSync } from 'node:fs'
+import { Command } from 'commander'
+import {
+  askCommand,
+  authStatusCommand,
+  capabilitiesCommand,
+  closeCommand,
+  configSetCommand,
+  configShowCommand,
+  devicesCommand,
+  doctorCommand,
+  hookRunCommand,
+  hooksInstallCommand,
+  hooksUninstallCommand,
+  initCommand,
+  loginCommand,
+  logoutCommand,
+  realIo,
+  repliesCommand,
+  sendCommand,
+  statusCommand,
+  type CommandDeps,
+} from './commands.js'
+import { defaultCredentialStore } from './credentials.js'
+import type { Platform } from '@notifai/protocol'
+
+const deps: CommandDeps = {
+  io: realIo(),
+  store: defaultCredentialStore(),
+  env: process.env,
+  cwd: process.cwd(),
+}
+
+/**
+ * Harness hooks deliver their event payload on stdin. Bounded on both time and
+ * size: a wrapper that opens the pipe without writing would otherwise hold the
+ * read until the harness killed the hook, delaying the user's own prompt.
+ */
+async function readStdin(timeoutMs = 2000, maxBytes = 1_000_000): Promise<string> {
+  if (process.stdin.isTTY) return ''
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = []
+    let total = 0
+    let settled = false
+    const finish = (): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      process.stdin.destroy()
+      resolve(Buffer.concat(chunks).toString('utf8'))
+    }
+    const timer = setTimeout(finish, timeoutMs)
+    timer.unref?.()
+    process.stdin.on('data', (chunk: Buffer) => {
+      total += chunk.length
+      if (total > maxBytes) return finish()
+      chunks.push(chunk)
+    })
+    process.stdin.on('end', finish)
+    process.stdin.on('error', finish)
+  })
+}
+
+const program = new Command('notifai')
+  .description('Send native device notifications from agents and local programs')
+  .version('0.1.0')
+
+program
+  .command('login')
+  .description('Pair this machine with your NotifAI account via browser approval')
+  .option('--name <name>', 'machine name shown in the dashboard (default: hostname)')
+  .option('--base-url <url>', 'NotifAI server URL')
+  .option('--no-open', 'do not open the approval page in a browser')
+  .action(async (opts: { name?: string; baseUrl?: string; open?: boolean }) => {
+    process.exit(await loginCommand(deps, opts))
+  })
+
+program
+  .command('logout')
+  .description('Remove the stored machine credential')
+  .action(() => {
+    process.exit(logoutCommand(deps))
+  })
+
+const auth = program.command('auth').description('Authentication helpers')
+auth
+  .command('status')
+  .description('Show the stored machine identity')
+  .option('--json', 'machine-readable output')
+  .action((opts: { json?: boolean }) => {
+    process.exit(authStatusCommand(deps, opts))
+  })
+
+program
+  .command('devices')
+  .description('List devices that can receive notifications')
+  .option('--json', 'machine-readable output')
+  .action(async (opts: { json?: boolean }) => {
+    process.exit(await devicesCommand(deps, opts))
+  })
+
+program
+  .command('capabilities')
+  .description('Show a platform capability contract')
+  .option('--platform <platform>', 'platform to describe (default: ios)')
+  .option('--json', 'machine-readable output')
+  .action(async (opts: { json?: boolean; platform?: Platform }) => {
+    process.exit(await capabilitiesCommand(deps, opts))
+  })
+
+program
+  .command('send')
+  .description('Send a notification')
+  .requiredOption('--title <title>', 'notification title')
+  .requiredOption('--body <body>', 'notification body')
+  .option('--subtitle <subtitle>')
+  .option('--detail <markdown>', 'long-form markdown shown only in the app, never on the banner')
+  .option('--detail-file <path>', 'read --detail from a file (use - for stdin)')
+  .option('--event <event>', 'agent event name, e.g. tests_passed')
+  .option('--kind <kind>', 'what this is: update (default) | done | question')
+  .option('--project <id>', 'project identifier, e.g. my-app (lazily registered)')
+  .option('--session <id>', 'sender session id shown as an avatar badge (env: NOTIFAI_SESSION)')
+  .option('--device <id>', 'target a device id (repeatable)', (v: string, all: string[]) => [...all, v], [])
+  .option('--all', 'target all routable devices (overrides configured devices)')
+  .option('--ttl <seconds>', 'delivery window in seconds', (v: string) => Number(v))
+  .option('--collapse-key <key>', 'replace earlier notifications with the same key')
+  .option('--platform <platform>', 'platform whose optional fields to include (default: ios)')
+  .option('--sound <sound>', 'default | done | attention | alert | none')
+  .option('--badge <n>', 'app badge count', (v: string) => Number(v))
+  .option('--thread-id <id>', 'group related notifications')
+  .option('--level <level>', 'interruption level: passive | active | time_sensitive')
+  .option('--relevance <score>', '0..1 relevance score', (v: string) => Number(v))
+  .option('--target-content-id <id>')
+  .option('--data <key=value>', 'custom data (repeatable)', (v: string, all: string[]) => [...all, v], [])
+  .option('--image <media_id>', 'attach an uploaded image')
+  .option('--reply', 'enable the inline reply action and block for the answer')
+  .option('--reply-timeout <seconds>', 'how long to wait for a reply (default: 900)', (v: string) => Number(v))
+  .option('--reply-window <seconds>', 'how long the server accepts a reply (default: 86400)', (v: string) => Number(v))
+  .option(
+    '--reply-choice <label>',
+    'ask a closed question (2-6 answers); one value splits on commas, or repeat the flag',
+    (v: string, all: string[]) => [...all, v], [],
+  )
+  .option('--no-block', 'send with the reply action without waiting for an answer')
+  .option('--wait <seconds>', 'how long to wait for provider outcomes', (v: string) => Number(v))
+  .option('--no-wait', 'return immediately after acceptance')
+  .option('--idempotency-key <key>', 'safe-retry key (default: random)')
+  .option('--base-url <url>', 'NotifAI server URL')
+  .option('--json', 'print the full submission receipt as JSON')
+  .action(async (opts: Record<string, unknown>) => {
+    // commander maps --no-wait onto the same "wait" flag; disentangle.
+    const noWait = opts['wait'] === false
+    const wait = typeof opts['wait'] === 'number' ? opts['wait'] : undefined
+    const noBlock = opts['block'] === false
+    const sendOpts = { ...opts }
+    // Same empty-collector normalisation as `ask`.
+    if (Array.isArray(sendOpts['replyChoice']) && sendOpts['replyChoice'].length === 0) {
+      delete sendOpts['replyChoice']
+    }
+    delete sendOpts['block']
+    // Long-form detail is usually a build log or a diff summary, which nobody
+    // wants to shell-escape onto a command line (D-059).
+    const detailFile = sendOpts['detailFile']
+    delete sendOpts['detailFile']
+    if (typeof detailFile === 'string') {
+      if (sendOpts['detail'] !== undefined) {
+        deps.io.err('Pass either --detail or --detail-file, not both.')
+        process.exit(2)
+      }
+      try {
+        sendOpts['detail'] = readFileSync(detailFile === '-' ? 0 : detailFile, 'utf8')
+      } catch (err) {
+        deps.io.err(`Could not read ${detailFile}: ${String(err)}`)
+        process.exit(2)
+      }
+    }
+    const flags = { ...sendOpts, noWait, noBlock } as Parameters<typeof sendCommand>[1]
+    if (wait === undefined) delete (flags as { wait?: number }).wait
+    else flags.wait = wait
+    process.exit(await sendCommand(deps, flags))
+  })
+
+program
+  .command('replies <request_id>')
+  .description('Retrieve replies for a notification request')
+  .option('--wait <seconds>', 'how long to wait for a reply', (v: string) => Number(v))
+  .option('--after <seq>', 'return replies after this sequence number', (v: string) => Number(v))
+  .option('--json', 'machine-readable output')
+  .action(async (requestId: string, opts: { wait?: number; after?: number; json?: boolean }) => {
+    process.exit(await repliesCommand(deps, requestId, opts))
+  })
+
+program
+  .command('status <request_id>')
+  .description('Show the evidence trail for a notification request')
+  .option('--json', 'machine-readable output')
+  .action(async (requestId: string, opts: { json?: boolean }) => {
+    process.exit(await statusCommand(deps, requestId, opts))
+  })
+
+program
+  .command('ask <question>')
+  .description('Register a question to push to your devices if you are away when the turn ends')
+  .option(
+    '--choice <label>',
+    'answers to offer instead of free text (2-6); one value splits on commas, or repeat the flag',
+    (v: string, all: string[]) => [...all, v], [],
+  )
+  .option('--session <id>', 'harness session id (default: $NOTIFAI_SESSION_ID)')
+  .action((question: string, opts: { choice?: string[]; session?: string }) => {
+    // commander's collector defaults to []; an empty list means "not asked".
+    const flags: Parameters<typeof askCommand>[2] = {
+      ...(opts.session !== undefined ? { session: opts.session } : {}),
+      ...(opts.choice?.length ? { choice: opts.choice } : {}),
+    }
+    process.exit(askCommand(deps, question, flags))
+  })
+
+program
+  .command('close <request_id>')
+  .description('Retire a question so late answers are rejected rather than lost')
+  .action(async (requestId: string) => {
+    process.exit(await closeCommand(deps, requestId))
+  })
+
+program
+  .command('hook <event>')
+  .description('Internal: run a harness hook (reads hook JSON on stdin)')
+  // Inert, and the point of it is that it is inert: the installed command line
+  // carries a marker that says "NotifAI wrote this" independently of which
+  // checkout wrote it (NotifAI-0vk).
+  .option('--owner <name>', 'internal ownership marker')
+  .action(async (event: string) => {
+    process.exit(await hookRunCommand(deps, event, readStdin))
+  })
+
+const hooks = program.command('hooks').description('Install harness hooks for questions and permissions')
+hooks
+  .command('install')
+  .description('Wire this harness to route blocked prompts to your devices when you are away')
+  .option('--harness <name>', 'claude-code | codex (default: detected)')
+  .option('--global', 'install for every project instead of just this one')
+  .action((opts: { harness?: string; global?: boolean }) => {
+    process.exit(hooksInstallCommand(deps, opts))
+  })
+hooks
+  .command('uninstall')
+  .description('Remove the hooks this CLI installed')
+  .option('--harness <name>', 'claude-code | codex (default: detected)')
+  .option('--global', 'remove the machine-wide install')
+  .action((opts: { harness?: string; global?: boolean }) => {
+    process.exit(hooksUninstallCommand(deps, opts))
+  })
+
+const config = program.command('config').description('Show or change configuration')
+config
+  .command('show')
+  .description('Show the resolved configuration')
+  .option('--explain', 'show where each value comes from')
+  .option('--json', 'machine-readable output')
+  .action((opts: { json?: boolean; explain?: boolean }) => {
+    process.exit(configShowCommand(deps, opts))
+  })
+config
+  .command('set <key> <value>')
+  .description('Set a configuration value (machine-global by default)')
+  .option('--project', 'write to the shared .notifai/config.toml instead')
+  .option('--local', 'write to the gitignored .notifai/config.local.toml')
+  .option('--session <id>', 'apply only to one harness session')
+  .option('--yes', 'skip the confirmation gate')
+  .action(
+    async (
+      key: string,
+      value: string,
+      opts: { project?: boolean; local?: boolean; session?: string; yes?: boolean },
+    ) => {
+      process.exit(await configSetCommand(deps, key, value, opts))
+    },
+  )
+
+program
+  .command('init')
+  .description('Set up NotifAI in this project: write the project identifier')
+  .option('--project-id <id>', 'project identifier slug (default: derived from the directory name)')
+  .option('--skills', 'also install the optional agent guidance skill via npx skills')
+  .action(async (opts: { projectId?: string; skills?: boolean }) => {
+    process.exit(await initCommand(deps, opts))
+  })
+
+program
+  .command('doctor')
+  .description('Check config, credential, server, auth, and device readiness')
+  .option('--json', 'machine-readable output')
+  .action(async (opts: { json?: boolean }) => {
+    process.exit(await doctorCommand(deps, opts))
+  })
+
+await program.parseAsync(process.argv)
