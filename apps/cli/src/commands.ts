@@ -374,6 +374,18 @@ export async function sendCommand(
     for (const issue of validation.errors) deps.io.err(`${issue.path}: ${issue.message}`)
     return EXIT.usage
   }
+  const hasReplyChoice = Array.isArray(flags.replyChoice)
+    ? flags.replyChoice.length > 0
+    : flags.replyChoice !== undefined
+  if (
+    !flags.reply &&
+    !hasReplyChoice &&
+    (flags.title.trim().endsWith('?') || flags.body.trim().endsWith('?'))
+  ) {
+    deps.io.err(
+      'Heads up: this notification ends with a question but has no reply action. Add --reply or --reply-choice so it can be answered from the notification.',
+    )
+  }
   const waitSeconds = flags.noWait ? 0 : config.wait_seconds.value
   const idempotencyKey = flags.idempotencyKey ?? `cli-${randomBytes(12).toString('base64url')}`
   try {

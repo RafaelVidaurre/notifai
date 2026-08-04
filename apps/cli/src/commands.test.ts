@@ -191,6 +191,64 @@ describe('command contracts', () => {
     expect(replyCalls).toBe(0)
   })
 
+  it.each([
+    { title: 'Deploy?   ', body: 'Ready.' },
+    { title: 'Deployment', body: 'Should I deploy?\n' },
+  ])('warns on stderr when $title / $body ends in a question after trimming', async (flags) => {
+    const io = new CapturedIo()
+    const client = { submit: async () => receipt } as unknown as ApiClient
+
+    expect(await sendCommand(makeDeps(io, client), flags)).toBe(EXIT.ok)
+    expect(io.errLines).toEqual([
+      'Heads up: this notification ends with a question but has no reply action. Add --reply or --reply-choice so it can be answered from the notification.',
+    ])
+  })
+
+  it('suppresses the question warning when --reply is present', async () => {
+    const io = new CapturedIo()
+    const client = { submit: async () => receipt } as unknown as ApiClient
+
+    expect(
+      await sendCommand(makeDeps(io, client), {
+        title: 'Deploy?',
+        body: 'Choose when ready.',
+        reply: true,
+        noBlock: true,
+      }),
+    ).toBe(EXIT.ok)
+    expect(io.errLines).toEqual([])
+  })
+
+  it('suppresses the question warning when --reply-choice is present', async () => {
+    const io = new CapturedIo()
+    const client = { submit: async () => receipt } as unknown as ApiClient
+
+    expect(
+      await sendCommand(makeDeps(io, client), {
+        title: 'Deploy?',
+        body: 'Choose when ready.',
+        replyChoice: ['Now', 'Later'],
+      }),
+    ).toBe(EXIT.ok)
+    expect(io.errLines).toEqual([])
+  })
+
+  it('keeps a warned JSON send successful and stdout machine-pure', async () => {
+    const io = new CapturedIo()
+    const client = { submit: async () => receipt } as unknown as ApiClient
+
+    expect(
+      await sendCommand(makeDeps(io, client), {
+        title: 'Deployment',
+        body: 'Should I deploy?',
+        json: true,
+      }),
+    ).toBe(EXIT.ok)
+    expect(io.outLines).toHaveLength(1)
+    expect(JSON.parse(io.outLines[0] ?? '{}')).toEqual(receipt)
+    expect(io.errLines).toHaveLength(1)
+  })
+
   it('loops in server-capped long polls until a reply arrives', async () => {
     const io = new CapturedIo()
     let now = 0
