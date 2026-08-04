@@ -544,9 +544,9 @@ describe('interactive command UX', () => {
     )
   })
 
-  it('keeps unattended config writes possible with --yes and the global default', async () => {
+  it('bypasses interactive config selection with --yes and uses the global default', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-config-global-'))
-    const io = new CapturedIo()
+    const io = new InteractiveIo()
     const deps = {
       ...makeDeps(io, {} as ApiClient),
       cwd,
@@ -554,6 +554,7 @@ describe('interactive command UX', () => {
     }
 
     expect(await configSetCommand(deps, 'sound', 'done', { yes: true })).toBe(EXIT.ok)
+    expect(io.prompts).toEqual([])
     expect(readFileSync(path.join(cwd, 'xdg', 'notifai', 'config.toml'), 'utf8')).toContain(
       'sound = "done"',
     )

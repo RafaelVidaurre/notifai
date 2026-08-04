@@ -1203,6 +1203,7 @@ export async function configSetCommand(
     flags.session === undefined &&
     flags.local !== true &&
     flags.project !== true &&
+    flags.yes !== true &&
     deps.io.interactive === true &&
     deps.io.select
   ) {
