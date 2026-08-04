@@ -13,16 +13,19 @@ import { ApiCallError, NetworkError, type ApiClient } from './client.js'
 import {
   askCommand,
   capabilitiesCommand,
+  configSetCommand,
   contradictingAnswer,
   describeHookFailure,
   doctorCommand,
   EXIT,
   initCommand,
+  loginCommand,
   projectSlugFrom,
   repliesCommand,
   sendCommand,
   type CommandDeps,
   type CommandIo,
+  type CommandSpinner,
 } from './commands.js'
 import { applyPlan, buildHookConfig } from './install-hooks.js'
 
@@ -43,6 +46,56 @@ class CapturedIo implements CommandIo {
   }
 
   openUrl() {}
+}
+
+class InteractiveIo extends CapturedIo {
+  interactive = true
+  selectAnswer: string | null = 'global'
+  confirmAnswer = true
+  prompts: string[] = []
+  notes: { message: string; title?: string }[] = []
+  intros: string[] = []
+  outros: string[] = []
+  spinnerEvents: string[] = []
+  checks: { ok: boolean; message: string }[] = []
+
+  override async confirm(question: string) {
+    this.prompts.push(question)
+    return this.confirmAnswer
+  }
+
+  async select(
+    message: string,
+    _options: { value: string; label: string; hint?: string }[],
+  ): Promise<string | null> {
+    this.prompts.push(message)
+    return this.selectAnswer
+  }
+
+  async intro(title: string) {
+    this.intros.push(title)
+  }
+
+  async outro(message: string) {
+    this.outros.push(message)
+  }
+
+  async note(message: string, title?: string) {
+    this.notes.push({ message, ...(title === undefined ? {} : { title }) })
+  }
+
+  async spinner(message: string): Promise<CommandSpinner> {
+    this.spinnerEvents.push(`start:${message}`)
+    return {
+      message: (next) => this.spinnerEvents.push(`message:${next}`),
+      stop: (next) => this.spinnerEvents.push(`stop:${next}`),
+      error: (next) => this.spinnerEvents.push(`error:${next}`),
+    }
+  }
+
+  async check(ok: boolean, message: string) {
+    this.checks.push({ ok, message })
+  }
 }
 
 function makeDeps(io: CapturedIo, client: ApiClient): CommandDeps {
@@ -389,6 +442,173 @@ describe('projectSlugFrom', () => {
     expect(projectSlugFrom('NotifAI')).toBe('notifai')
     expect(projectSlugFrom('--weird__Name.2')).toBe('weird__name.2')
     expect(projectSlugFrom('!!!')).toBe('project')
+  })
+})
+
+describe('interactive command UX', () => {
+  it('styles login pairing progress for a human terminal', async () => {
+    const io = new InteractiveIo()
+    let now = 0
+    let savedMachine = ''
+    let polls = 0
+    const client = {
+      beginPairing: async () => ({
+        pairing_id: 'pair_test',
+        code: 'ABCD-EFGH',
+        approve_url: 'https://test.notifai.invalid/pair/ABCD-EFGH',
+        expires_at: new Date(10_000).toISOString(),
+        poll_interval_seconds: 1,
+      }),
+      pollPairing: async () => {
+        polls += 1
+        return polls === 1 ? { status: 'pending' } : { status: 'approved', machine_id: 'mac_new' }
+      },
+    } as unknown as ApiClient
+    const deps: CommandDeps = {
+      ...makeDeps(io, client),
+      now: () => now,
+      sleep: async (milliseconds) => {
+        now += milliseconds
+      },
+      store: {
+        load: () => null,
+        save: (credential) => {
+          savedMachine = credential.machineId
+        },
+        clear: () => {},
+        describe: () => 'test credential store',
+      },
+    }
+
+    expect(await loginCommand(deps, { name: 'workstation', open: false })).toBe(EXIT.ok)
+    expect(io.intros).toEqual(['NotifAI sign in'])
+    expect(io.notes).toEqual([
+      {
+        title: 'Approve this machine',
+        message: 'Code: ABCD-EFGH\nhttps://test.notifai.invalid/pair/ABCD-EFGH',
+      },
+    ])
+    expect(io.spinnerEvents).toEqual([
+      'start:Waiting for approval…',
+      'message:Waiting for approval…',
+      'stop:Machine "workstation" approved',
+    ])
+    expect(io.outLines).toEqual([])
+    expect(savedMachine).toBe('mac_new')
+  })
+
+  it('keeps unattended login progress plain and unstyled', async () => {
+    const io = new CapturedIo()
+    let now = 0
+    const client = {
+      beginPairing: async () => ({
+        pairing_id: 'pair_test',
+        code: 'ABCD-EFGH',
+        approve_url: 'https://test.notifai.invalid/pair/ABCD-EFGH',
+        expires_at: new Date(10_000).toISOString(),
+        poll_interval_seconds: 1,
+      }),
+      pollPairing: async () => ({ status: 'approved', machine_id: 'mac_new' }),
+    } as unknown as ApiClient
+    const deps = {
+      ...makeDeps(io, client),
+      now: () => now,
+      sleep: async (milliseconds: number) => {
+        now += milliseconds
+      },
+    }
+
+    expect(await loginCommand(deps, { open: false })).toBe(EXIT.ok)
+    expect(io.outLines.slice(0, 3)).toEqual([
+      'Pairing code: ABCD-EFGH',
+      'Approve this machine at: https://test.notifai.invalid/pair/ABCD-EFGH',
+      'Waiting for approval…',
+    ])
+  })
+
+  it('asks a human to choose a config layer when no layer flag was passed', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-config-layer-'))
+    const io = new InteractiveIo()
+    io.selectAnswer = 'local'
+    const deps = {
+      ...makeDeps(io, {} as ApiClient),
+      cwd,
+      env: { XDG_CONFIG_HOME: path.join(cwd, 'xdg') },
+    }
+
+    expect(await configSetCommand(deps, 'sound', 'done', {})).toBe(EXIT.ok)
+    expect(io.prompts[0]).toBe('Where should this setting live?')
+    expect(io.prompts[1]).toContain(path.join(cwd, '.notifai', 'config.local.toml'))
+    expect(readFileSync(path.join(cwd, '.notifai', 'config.local.toml'), 'utf8')).toContain(
+      'sound = "done"',
+    )
+  })
+
+  it('keeps unattended config writes possible with --yes and the global default', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-config-global-'))
+    const io = new CapturedIo()
+    const deps = {
+      ...makeDeps(io, {} as ApiClient),
+      cwd,
+      env: { XDG_CONFIG_HOME: path.join(cwd, 'xdg') },
+    }
+
+    expect(await configSetCommand(deps, 'sound', 'done', { yes: true })).toBe(EXIT.ok)
+    expect(readFileSync(path.join(cwd, 'xdg', 'notifai', 'config.toml'), 'utf8')).toContain(
+      'sound = "done"',
+    )
+  })
+
+  it('renders doctor checks through the styled seam for humans', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-doctor-style-'))
+    const io = new InteractiveIo()
+    const client = {
+      health: async () => true,
+      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+    } as unknown as ApiClient
+    const deps: CommandDeps = {
+      ...makeDeps(io, client),
+      cwd,
+      env: {
+        XDG_CONFIG_HOME: path.join(cwd, 'config'),
+        XDG_STATE_HOME: path.join(cwd, 'state'),
+        CODEX_HOME: path.join(cwd, 'codex'),
+        CLAUDE_CONFIG_DIR: path.join(cwd, 'claude'),
+      },
+      store: { load: () => null, save: () => {}, clear: () => {}, describe: () => 'empty store' },
+    }
+
+    expect(await doctorCommand(deps, {})).toBe(EXIT.failed)
+    expect(io.intros).toEqual(['NotifAI doctor'])
+    expect(io.checks.some((check) => !check.ok && check.message.startsWith('credential:'))).toBe(true)
+    expect(io.checks.some((check) => check.ok && check.message.startsWith('contract:'))).toBe(true)
+    expect(io.outLines).toEqual([])
+  })
+
+  it('keeps doctor JSON as one machine-readable stdout document', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-doctor-json-'))
+    const io = new InteractiveIo()
+    const client = {
+      health: async () => true,
+      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+    } as unknown as ApiClient
+    const deps: CommandDeps = {
+      ...makeDeps(io, client),
+      cwd,
+      env: {
+        XDG_CONFIG_HOME: path.join(cwd, 'config'),
+        XDG_STATE_HOME: path.join(cwd, 'state'),
+        CODEX_HOME: path.join(cwd, 'codex'),
+        CLAUDE_CONFIG_DIR: path.join(cwd, 'claude'),
+      },
+      store: { load: () => null, save: () => {}, clear: () => {}, describe: () => 'empty store' },
+    }
+
+    await doctorCommand(deps, { json: true })
+    expect(io.outLines).toHaveLength(1)
+    expect(JSON.parse(io.outLines[0] ?? '{}')).toHaveProperty('checks')
+    expect(io.intros).toEqual([])
+    expect(io.checks).toEqual([])
   })
 })
 

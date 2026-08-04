@@ -96,6 +96,14 @@ export interface CommandIo {
   intro?(title: string): Promise<void>
   outro?(message: string): Promise<void>
   note?(message: string, title?: string): Promise<void>
+  spinner?(message: string): Promise<CommandSpinner | null>
+  check?(ok: boolean, message: string): Promise<void>
+}
+
+export interface CommandSpinner {
+  message(message: string): void
+  stop(message: string): void
+  error(message: string): void
 }
 
 export interface CommandDeps {
@@ -189,33 +197,54 @@ export async function loginCommand(
     return reportError(deps, err)
   }
 
-  deps.io.out(`Pairing code: ${begin.code}`)
-  deps.io.out(`Approve this machine at: ${begin.approve_url}`)
-  deps.io.out('Waiting for approval…')
+  const interactive = deps.io.interactive === true
+  if (interactive) {
+    await deps.io.intro?.('NotifAI sign in')
+    await deps.io.note?.(`Code: ${begin.code}\n${begin.approve_url}`, 'Approve this machine')
+  } else {
+    deps.io.out(`Pairing code: ${begin.code}`)
+    deps.io.out(`Approve this machine at: ${begin.approve_url}`)
+    deps.io.out('Waiting for approval…')
+  }
   if (flags.open !== false) deps.io.openUrl(begin.approve_url)
 
   const expiresAt = new Date(begin.expires_at).getTime()
   const intervalMs = Math.max(begin.poll_interval_seconds, 1) * 1000
-  while (Date.now() < expiresAt) {
-    await new Promise((resolve) => setTimeout(resolve, intervalMs))
+  const now = deps.now ?? Date.now
+  const sleep = deps.sleep ?? ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)))
+  const spinner = interactive ? await deps.io.spinner?.('Waiting for approval…') : null
+  while (now() < expiresAt) {
+    await sleep(intervalMs)
     let poll
     try {
       poll = await client.pollPairing(begin.pairing_id, pollVerifier)
     } catch (err) {
-      if (err instanceof NetworkError) continue
+      if (err instanceof NetworkError) {
+        spinner?.message('Connection lost — retrying…')
+        continue
+      }
+      spinner?.error('Pairing failed')
       return reportError(deps, err)
     }
     if (poll.status === 'approved' && poll.machine_id) {
       deps.store.save({ machineId: poll.machine_id, secret, baseUrl, machineName })
-      deps.io.out(`Machine "${machineName}" approved. Credential stored in ${deps.store.describe()}.`)
+      if (interactive) {
+        spinner?.stop(`Machine "${machineName}" approved`)
+        await deps.io.outro?.(`Credential stored in ${deps.store.describe()}`)
+      } else {
+        deps.io.out(`Machine "${machineName}" approved. Credential stored in ${deps.store.describe()}.`)
+      }
       return EXIT.ok
     }
     if (poll.status === 'denied') {
+      spinner?.error('Pairing denied')
       deps.io.err('Pairing was denied from the dashboard.')
       return EXIT.auth
     }
     if (poll.status === 'expired') break
+    spinner?.message('Waiting for approval…')
   }
+  spinner?.error('Pairing expired')
   deps.io.err('Pairing expired before it was approved. Run `notifai login` again.')
   return EXIT.auth
 }
@@ -1169,11 +1198,31 @@ export async function configSetCommand(
   }
   if (key === 'devices') value = rawValue.split(',').map((s) => s.trim()).filter(Boolean)
 
+  let layer = flags.local ? 'local' : flags.project ? 'project' : 'global'
+  if (
+    flags.session === undefined &&
+    flags.local !== true &&
+    flags.project !== true &&
+    deps.io.interactive === true &&
+    deps.io.select
+  ) {
+    const selected = await deps.io.select('Where should this setting live?', [
+      { value: 'global', label: 'This machine', hint: 'applies across projects' },
+      { value: 'project', label: 'This project (shared)', hint: '.notifai/config.toml' },
+      { value: 'local', label: 'This project (local)', hint: 'gitignored' },
+    ])
+    if (selected === null) {
+      deps.io.err('No configuration layer selected.')
+      return EXIT.usage
+    }
+    layer = selected
+  }
+
   const targetPath = flags.session
     ? sessionConfigPath(flags.session, deps.env)
-    : flags.local
+    : layer === 'local'
       ? (findProjectLocalConfigPath(deps.cwd) ?? path.join(deps.cwd, '.notifai', 'config.local.toml'))
-      : flags.project
+      : layer === 'project'
         ? (findProjectConfigPath(deps.cwd) ?? path.join(deps.cwd, '.notifai', 'config.toml'))
         : globalConfigPath(deps.env)
 
@@ -1473,6 +1522,10 @@ export async function doctorCommand(deps: CommandDeps, flags: { json?: boolean }
   const allOk = checks.every((c) => c.ok)
   if (flags.json) {
     deps.io.out(JSON.stringify({ ok: allOk, checks }, null, 2))
+  } else if (deps.io.interactive === true && deps.io.check) {
+    await deps.io.intro?.('NotifAI doctor')
+    for (const c of checks) await deps.io.check(c.ok, `${c.name}: ${c.detail}`)
+    await deps.io.outro?.(allOk ? 'Everything looks good' : 'Some checks need attention')
   } else {
     for (const c of checks) deps.io.out(`${c.ok ? 'ok  ' : 'FAIL'}  ${c.name}: ${c.detail}`)
   }
@@ -1713,6 +1766,22 @@ export function realIo(env: NodeJS.ProcessEnv = process.env): CommandIo {
     note: async (message, title) => {
       if (!interactive()) return
       ;(await clack()).note(message, title)
+    },
+    spinner: async (message) => {
+      if (!interactive()) return null
+      const progress = (await clack()).spinner()
+      progress.start(message)
+      return {
+        message: (next) => progress.message(next),
+        stop: (next) => progress.stop(next),
+        error: (next) => progress.error(next),
+      }
+    },
+    check: async (ok, message) => {
+      if (!interactive()) return
+      const { log } = await clack()
+      if (ok) log.success(message)
+      else log.error(message)
     },
     openUrl: (url) => {
       const command =

@@ -264,7 +264,7 @@ config
   })
 config
   .command('set <key> <value>')
-  .description('Set a configuration value (machine-global by default)')
+  .description('Set a configuration value (choose a layer interactively; machine-global unattended)')
   .option('--project', 'write to the shared .notifai/config.toml instead')
   .option('--local', 'write to the gitignored .notifai/config.local.toml')
   .option('--session <id>', 'apply only to one session')
