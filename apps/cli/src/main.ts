@@ -231,15 +231,18 @@ program
   // carries a marker that says "NotifAI wrote this" independently of which
   // checkout wrote it (NotifAI-0vk).
   .option('--owner <name>', 'internal ownership marker')
-  .action(async (event: string) => {
-    process.exit(await hookRunCommand(deps, event, readStdin))
+  .option('--harness <name>', 'internal harness output adapter')
+  .action(async (event: string, opts: { harness?: string }) => {
+    process.exit(
+      await hookRunCommand(deps, event, readStdin, opts.harness === 'cursor' ? 'cursor' : undefined),
+    )
   })
 
 const hooks = program.command('hooks').description('Install harness hooks for questions and permissions')
 hooks
   .command('install')
   .description('Wire this harness to route blocked prompts to your devices when you are away')
-  .option('--harness <name>', 'claude-code | codex (default: detected)')
+  .option('--harness <name>', 'claude-code | codex | cursor | opencode (default: detected)')
   .option('--global', 'install for every project instead of just this one')
   .action((opts: { harness?: string; global?: boolean }) => {
     process.exit(hooksInstallCommand(deps, opts))
@@ -247,7 +250,7 @@ hooks
 hooks
   .command('uninstall')
   .description('Remove the hooks this CLI installed')
-  .option('--harness <name>', 'claude-code | codex (default: detected)')
+  .option('--harness <name>', 'claude-code | codex | cursor | opencode (default: detected)')
   .option('--global', 'remove the machine-wide install')
   .action((opts: { harness?: string; global?: boolean }) => {
     process.exit(hooksUninstallCommand(deps, opts))

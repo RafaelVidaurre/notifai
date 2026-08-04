@@ -436,6 +436,32 @@ describe('nagging guards', () => {
   })
 })
 
+describe('Cursor stop output', () => {
+  it('maps the phone answer to one native followup_message', async () => {
+    const h = harness([reply({ text: 'Ship it' })], 900)
+    writeSessionState('cursor-conversation', h.env, { last_prompt_at: AWAY })
+    registerQuestion('cursor-conversation', h.env, { question: 'Deploy now?' })
+
+    await hookRunCommand(
+      h.deps,
+      'stop',
+      stdin({
+        conversation_id: 'cursor-conversation',
+        workspace_roots: [h.deps.cwd],
+        loop_count: 0,
+      }),
+      'cursor',
+    )
+
+    expect(h.io.outLines).toHaveLength(1)
+    const output = JSON.parse(h.io.outLines[0] ?? '{}') as Record<string, unknown>
+    expect(output['followup_message']).toContain(
+      'NotifAI — the user answered from Furankuphone: "Ship it". Continue with that answer.',
+    )
+    expect(output).not.toHaveProperty('decision')
+  })
+})
+
 /**
  * NotifAI-h02. Rafael, 2026-08-03, on the questions piling up on his phone:
  * "I see no value cause they are stale". Every one of them was a delivered

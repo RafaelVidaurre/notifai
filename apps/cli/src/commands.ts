@@ -49,6 +49,7 @@ import { readIdleSeconds } from './idle.js'
 import {
   HARNESSES,
   applyPlan,
+  buildCursorHookConfig,
   buildHookConfig,
   codexConfigPath,
   codexLayerDir,
@@ -57,8 +58,11 @@ import {
   detectHarness,
   findInstallations,
   handlerEvent,
+  loadCursorSettings,
   loadSettings,
+  mergeCursorHooks,
   mergeHooks,
+  removeCursorHooks,
   removeHooks,
   settingsFile,
   type Harness,
@@ -721,6 +725,7 @@ export async function hookRunCommand(
   deps: CommandDeps,
   event: string,
   readStdin: () => Promise<string>,
+  harness?: 'cursor',
 ): Promise<number> {
   if (!(HOOK_EVENTS as readonly string[]).includes(event)) {
     deps.io.err(`Unknown hook event "${event}". Valid: ${HOOK_EVENTS.join(', ')}`)
@@ -729,6 +734,18 @@ export async function hookRunCommand(
   let envelope: HookEnvelope
   try {
     envelope = parseHookInput(await readStdin())
+    if (harness === 'cursor') {
+      const sessionId = envelope.session_id ?? envelope.conversation_id
+      const cwd = envelope.cwd ?? envelope.workspace_roots?.[0]
+      envelope = {
+        ...envelope,
+        ...(sessionId === undefined ? {} : { session_id: sessionId }),
+        ...(cwd === undefined ? {} : { cwd }),
+        stop_hook_active:
+          envelope.stop_hook_active ??
+          (typeof envelope.loop_count === 'number' && envelope.loop_count > 0),
+      }
+    }
   } catch {
     return EXIT.ok
   }
@@ -804,7 +821,16 @@ export async function hookRunCommand(
         ? await handleUserPromptSubmit(ctx, envelope)
         : await handleStop(ctx, envelope)
     for (const note of outcome.notes) deps.io.err(`notifai: ${note}`)
-    if (outcome.stdout !== undefined) deps.io.out(outcome.stdout)
+    if (outcome.stdout !== undefined) {
+      let stdout = outcome.stdout
+      if (harness === 'cursor' && event === 'stop') {
+        const decision = JSON.parse(outcome.stdout) as { decision?: unknown; reason?: unknown }
+        if (decision.decision === 'block' && typeof decision.reason === 'string') {
+          stdout = JSON.stringify({ followup_message: decision.reason })
+        }
+      }
+      deps.io.out(stdout)
+    }
     return EXIT.ok
   } catch (err) {
     for (const line of describeHookFailure(err)) deps.io.err(`notifai: ${line}`)
@@ -983,6 +1009,38 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
     })
   }
 
+  if (harness === 'cursor') {
+    let document
+    try {
+      document = loadCursorSettings(file)
+    } catch (err) {
+      deps.io.err(String(err))
+      return EXIT.failed
+    }
+    const merged = mergeCursorHooks(
+      document,
+      buildCursorHookConfig({
+        execPath,
+        scriptPath,
+        replyTimeoutSeconds: config.hook_reply_timeout_seconds.value,
+        graceSeconds: config.ask_grace_seconds.value,
+      }),
+      scriptPath,
+    )
+    try {
+      applyPlan(file, merged.document)
+    } catch (err) {
+      deps.io.err(String(err))
+      return EXIT.failed
+    }
+    deps.io.out(`Installed ${harness} hooks in ${file}`)
+    if (merged.replaced.length > 0) deps.io.out(`  replaced: ${merged.replaced.join(', ')}`)
+    if (merged.added.length > 0) deps.io.out(`  added: ${merged.added.join(', ')}`)
+    deps.io.out('Cursor reloads hooks.json automatically. A phone answer is submitted as one')
+    deps.io.out('follow-up user message; loop_limit = 1 prevents repeated answer turns.')
+    return EXIT.ok
+  }
+
   let document
   try {
     document = loadSettings(file)
@@ -1108,6 +1166,28 @@ export function hooksUninstallCommand(deps: CommandDeps, flags: HooksInstallFlag
     deps.io.out(`Removed the NotifAI OpenCode plugin at ${file}`)
     return EXIT.ok
   }
+  if (harness === 'cursor') {
+    let document
+    try {
+      document = loadCursorSettings(file)
+    } catch (err) {
+      deps.io.err(String(err))
+      return EXIT.failed
+    }
+    const stripped = removeCursorHooks(document, scriptPath)
+    try {
+      applyPlan(file, stripped.document)
+    } catch (err) {
+      deps.io.err(String(err))
+      return EXIT.failed
+    }
+    deps.io.out(
+      stripped.replaced.length > 0
+        ? `Removed NotifAI hooks (${stripped.replaced.join(', ')}) from ${file}`
+        : `No NotifAI hooks found in ${file}`,
+    )
+    return EXIT.ok
+  }
   let document
   try {
     document = loadSettings(file)
@@ -1134,8 +1214,7 @@ function resolveHarness(deps: CommandDeps, requested: string | undefined): Harne
   if (requested !== undefined) {
     if ((HARNESSES as readonly string[]).includes(requested)) return requested as Harness
     deps.io.err(
-      `Unknown harness "${requested}". Supported: ${HARNESSES.join(', ')}. ` +
-        'OpenCode needs a JavaScript plugin rather than a command hook and is not supported yet.',
+      `Unknown harness "${requested}". Supported: ${HARNESSES.join(', ')}.`,
     )
     return null
   }
@@ -1613,13 +1692,16 @@ function hookChecks(deps: CommandDeps): { name: string; ok: boolean; detail: str
   }
 
   const fired = readProjectSession(deps.cwd, deps.env, (deps.now ?? Date.now)()) !== null
+  const cursorOnly = installations.every((installation) => installation.harness === 'cursor')
   checks.push({
     name: 'hooks (fired)',
     ok: fired,
     detail: fired
       ? 'a session in this directory has run them'
-      : 'installed but never run here — restart the harness and send one prompt ' +
-        '(hooks are read once at session start)',
+      : cursorOnly
+        ? 'installed but never run here — Cursor reloads hooks automatically; send one prompt'
+        : 'installed but never run here — restart the harness and send one prompt ' +
+          '(hooks are read once at session start)',
   })
 
   const stray = codexStrayWorktreeCheck(deps)

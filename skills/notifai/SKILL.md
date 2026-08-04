@@ -288,17 +288,17 @@ notifai hooks install   # just the hooks: route away-questions to their devices
 notifai doctor          # full evidence trail: credential, server, devices, hooks
 ```
 
-`hooks install` wires the harness (Claude Code, Codex, or OpenCode) so a
+`hooks install` wires the harness (Claude Code, Codex, Cursor, or OpenCode) so a
 question you registered with `notifai ask` reaches the user's phone **only**
 when they have gone quiet. It changes nothing while they are at the keyboard.
 Suggest it once; do not install it without being asked.
 
-**The session that installs the hooks can never use them.** A harness reads its
-hooks once, at session start, so hooks you install now stay inert for the rest of
-this session however long it lasts — `notifai ask` will tell you the session is
-unknown, and it is right. Say this to the user when you install: they need to
-restart the harness and send one prompt. Do not retry the ask, and do not invent
-a `--session` id to get past it.
+**A Claude Code, Codex, or OpenCode session that installs hooks can never use
+them.** Those harnesses load hooks once at session start, so the user must
+restart the harness and send one prompt. Cursor is the exception: it watches
+`.cursor/hooks.json` and reloads changes automatically, so send one prompt after
+installation without claiming a restart is required. Do not retry the ask, and
+do not invent a `--session` id to get past it.
 
 On Codex, hooks must additionally be approved: Codex trusts hooks by content
 hash and silently skips untrusted ones — it reports the hook event as completed
@@ -313,6 +313,11 @@ On OpenCode the adapter is a generated plugin file rather than an entry in a
 settings document. NotifAI owns that whole file: install refuses to overwrite a
 plugin it did not write, and uninstall removes only its own. The same restart
 rule applies — OpenCode loads plugins once at start.
+
+On Cursor the adapter uses the native flat hook schema. A phone answer becomes
+one native `followup_message`, and the installed stop hook sets `loop_limit = 1`
+so an answer cannot turn into repeated automatic turns. Do not claim another
+harness is supported unless it appears in `notifai hooks install --help`.
 
 `notifai doctor` answers "will this actually work?" without a live test: it
 reports the credential, server, devices, where hooks are installed, whether any

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import type {
@@ -18,6 +18,8 @@ import {
   describeHookFailure,
   doctorCommand,
   EXIT,
+  hooksInstallCommand,
+  hooksUninstallCommand,
   initCommand,
   loginCommand,
   projectSlugFrom,
@@ -433,6 +435,103 @@ describe('command contracts', () => {
     expect(await repliesCommand(makeDeps(io, client), receipt.request_id, { after: 7 })).toBe(EXIT.ok)
     expect(requested).toEqual({ waitSeconds: 0, afterSeq: 7 })
     expect(io.outLines).toEqual(['reply from iPhone: yes, after the migration'])
+  })
+})
+
+describe('Cursor hook commands', () => {
+  const execPath = '/usr/local/bin/node'
+  const scriptPath = '/opt/notifai/dist/main.js'
+
+  it('installs native Cursor hooks with a single bounded answer continuation', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-cursor-install-'))
+    const io = new CapturedIo()
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd }
+
+    expect(
+      hooksInstallCommand(deps, { harness: 'cursor', execPath, scriptPath }),
+    ).toBe(EXIT.ok)
+
+    const installed = JSON.parse(
+      readFileSync(path.join(cwd, '.cursor', 'hooks.json'), 'utf8'),
+    ) as {
+      version: number
+      hooks: Record<string, { command: string; timeout?: number; loop_limit?: number }[]>
+    }
+    expect(installed.version).toBe(1)
+    expect(Object.keys(installed.hooks).sort()).toEqual([
+      'beforeSubmitPrompt',
+      'sessionEnd',
+      'stop',
+    ])
+    expect(installed.hooks['beforeSubmitPrompt']?.[0]?.command).toContain(
+      'hook user-prompt-submit --owner notifai --harness cursor',
+    )
+    expect(installed.hooks['stop']?.[0]).toMatchObject({
+      command: expect.stringContaining('hook stop --owner notifai --harness cursor'),
+      loop_limit: 1,
+    })
+  })
+
+  it('reports a native Cursor installation through doctor', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-cursor-doctor-'))
+    const io = new CapturedIo()
+    const client = {
+      health: async () => true,
+      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+    } as unknown as ApiClient
+    const deps: CommandDeps = {
+      ...makeDeps(io, client),
+      cwd,
+      env: {
+        HOME: path.join(cwd, 'home'),
+        XDG_CONFIG_HOME: path.join(cwd, 'config'),
+        XDG_STATE_HOME: path.join(cwd, 'state'),
+        CODEX_HOME: path.join(cwd, 'codex'),
+        CLAUDE_CONFIG_DIR: path.join(cwd, 'claude'),
+      },
+      store: { load: () => null, save: () => {}, clear: () => {}, describe: () => 'empty store' },
+    }
+    expect(
+      hooksInstallCommand(deps, { harness: 'cursor', execPath, scriptPath }),
+    ).toBe(EXIT.ok)
+    io.outLines = []
+
+    await doctorCommand(deps, {})
+
+    expect(io.outLines).toContain(
+      `ok    hooks: cursor project (${path.join(cwd, '.cursor', 'hooks.json')})`,
+    )
+    expect(io.outLines.some((line) => line.includes('Cursor reloads hooks automatically'))).toBe(
+      true,
+    )
+  })
+
+  it('uninstalls only NotifAI Cursor hooks and preserves foreign hooks', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-cursor-uninstall-'))
+    const io = new CapturedIo()
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd }
+    expect(
+      hooksInstallCommand(deps, { harness: 'cursor', execPath, scriptPath }),
+    ).toBe(EXIT.ok)
+    const file = path.join(cwd, '.cursor', 'hooks.json')
+    const installed = JSON.parse(readFileSync(file, 'utf8')) as {
+      version: number
+      hooks: Record<string, { command: string }[]>
+    }
+    installed.hooks['stop']?.unshift({ command: './keep-my-cursor-hook.sh' })
+    writeFileSync(file, `${JSON.stringify(installed, null, 2)}\n`)
+
+    expect(
+      hooksUninstallCommand(deps, { harness: 'cursor', scriptPath }),
+    ).toBe(EXIT.ok)
+
+    const remaining = JSON.parse(readFileSync(file, 'utf8')) as {
+      version: number
+      hooks: Record<string, { command: string }[]>
+    }
+    expect(remaining.version).toBe(1)
+    expect(remaining.hooks['stop']).toEqual([{ command: './keep-my-cursor-hook.sh' }])
+    expect(JSON.stringify(remaining)).not.toContain('--owner notifai')
   })
 })
 

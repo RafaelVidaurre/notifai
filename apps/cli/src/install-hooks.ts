@@ -35,12 +35,12 @@ const OPENCODE_EVENTS = [
  * with an optional timeout — so one generator serves both. Only the file
  * location and the event set differ.
  *
- * OpenCode is deliberately absent: its extension point is a JavaScript plugin
- * module, not a command hook, so it needs a different adapter rather than a
- * different path (NotifAI-o9c).
+ * Cursor's native format is flat and lower-camel-cased, while OpenCode's
+ * extension point is a JavaScript plugin module. Each therefore has a bounded
+ * adapter instead of being forced through this shared document shape.
  */
 
-export const HARNESSES = ['claude-code', 'codex', 'opencode'] as const
+export const HARNESSES = ['claude-code', 'codex', 'cursor', 'opencode'] as const
 export type Harness = (typeof HARNESSES)[number]
 
 export interface HookHandler {
@@ -70,8 +70,16 @@ export interface InstallPlan {
  * rather than the bare binary name: hooks inherit a login-ish environment, and
  * a `notifai` that is only on an interactive shell's PATH fails silently.
  */
-export function hookCommand(execPath: string, scriptPath: string, event: string): string {
-  return `${quote(execPath)} ${quote(scriptPath)} hook ${event} ${OWNER_MARKER}`
+export function hookCommand(
+  execPath: string,
+  scriptPath: string,
+  event: string,
+  harness?: 'cursor',
+): string {
+  return (
+    `${quote(execPath)} ${quote(scriptPath)} hook ${event} ${OWNER_MARKER}` +
+    (harness === 'cursor' ? ' --harness cursor' : '')
+  )
 }
 
 /**
@@ -162,6 +170,51 @@ export function buildHookConfig(options: BuildOptions): HookConfig {
   }
 }
 
+export interface CursorHookHandler {
+  command: string
+  timeout?: number
+  loop_limit?: number | null
+}
+
+export type CursorHookConfig = Record<string, CursorHookHandler[]>
+
+interface CursorSettingsDocument {
+  version?: number
+  hooks?: CursorHookConfig
+  [key: string]: unknown
+}
+
+/** Cursor's native schema is flat and uses lower-camel lifecycle event names. */
+export function buildCursorHookConfig(options: BuildOptions): CursorHookConfig {
+  const blockingTimeout = Math.min(
+    HOOK_CEILING_SECONDS,
+    options.graceSeconds + options.replyTimeoutSeconds + 60,
+  )
+  return {
+    beforeSubmitPrompt: [
+      {
+        command: hookCommand(options.execPath, options.scriptPath, 'user-prompt-submit', 'cursor'),
+        timeout: 15,
+      },
+    ],
+    stop: [
+      {
+        command: hookCommand(options.execPath, options.scriptPath, 'stop', 'cursor'),
+        timeout: blockingTimeout,
+        // One phone answer produces one automatic follow-up turn. There is no
+        // useful reason for Cursor to repeat it, even if state cleanup fails.
+        loop_limit: 1,
+      },
+    ],
+    sessionEnd: [
+      {
+        command: hookCommand(options.execPath, options.scriptPath, 'session-end', 'cursor'),
+        timeout: 3,
+      },
+    ],
+  }
+}
+
 /**
  * Where each harness reads hooks from. Project installs deliberately target the
  * gitignored file where one exists: which devices a person wants their
@@ -177,6 +230,12 @@ export function settingsFile(
   // generated plugin module, so it owns a whole file rather than a handler
   // inside one (NotifAI-du1). `opencodePluginPath` is its equivalent.
   if (harness === 'opencode') return opencodePluginPath(global, cwd, env)
+  if (harness === 'cursor') {
+    const home = env['HOME'] !== undefined && env['HOME'] !== '' ? env['HOME'] : os.homedir()
+    return global
+      ? path.join(home, '.cursor', 'hooks.json')
+      : path.join(cwd, '.cursor', 'hooks.json')
+  }
   if (harness === 'claude-code') {
     return global
       ? path.join(configHome(env, 'CLAUDE_CONFIG_DIR', '.claude'), 'settings.json')
@@ -287,6 +346,9 @@ export function detectHarness(cwd: string): Harness | null {
   if (existsSync(path.join(cwd, '.codex')) || existsSync(path.join(os.homedir(), '.codex'))) {
     found.push('codex')
   }
+  if (existsSync(path.join(cwd, '.cursor')) || existsSync(path.join(os.homedir(), '.cursor'))) {
+    found.push('cursor')
+  }
   if (
     existsSync(path.join(cwd, '.opencode')) ||
     existsSync(path.join(os.homedir(), '.config', 'opencode'))
@@ -299,6 +361,66 @@ export function detectHarness(cwd: string): Harness | null {
 interface SettingsDocument {
   hooks?: HookConfig
   [key: string]: unknown
+}
+
+function readCursorSettings(file: string): CursorSettingsDocument {
+  if (!existsSync(file)) return { version: 1 }
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(file, 'utf8'))
+    return typeof parsed === 'object' && parsed !== null
+      ? (parsed as CursorSettingsDocument)
+      : { version: 1 }
+  } catch {
+    throw new Error(`Could not parse ${file}; fix or move it before installing hooks.`)
+  }
+}
+
+function isOurCommand(command: string, scriptPath: string): boolean {
+  if (command.includes(OWNER_MARKER)) return true
+  return (
+    command.includes(`${scriptPath}' hook `) ||
+    command.includes(`${scriptPath}" hook `) ||
+    command.includes(`${scriptPath} hook `)
+  )
+}
+
+export function mergeCursorHooks(
+  existing: CursorSettingsDocument,
+  incoming: CursorHookConfig,
+  scriptPath: string,
+): { document: CursorSettingsDocument; added: string[]; replaced: string[]; removed: string[] } {
+  const hooks: CursorHookConfig = {}
+  const added: string[] = []
+  const replaced: string[] = []
+  const removed: string[] = []
+
+  for (const [event, handlers] of Object.entries(existing.hooks ?? {})) {
+    const foreign = handlers.filter((handler) => !isOurCommand(handler.command, scriptPath))
+    if (foreign.length !== handlers.length) {
+      if (event in incoming) replaced.push(event)
+      else removed.push(event)
+    }
+    if (foreign.length > 0) hooks[event] = foreign
+  }
+  for (const [event, handlers] of Object.entries(incoming)) {
+    if (!replaced.includes(event)) added.push(event)
+    hooks[event] = [...(hooks[event] ?? []), ...handlers]
+  }
+  return { document: { ...existing, version: 1, hooks }, added, replaced, removed }
+}
+
+export function removeCursorHooks(
+  existing: CursorSettingsDocument,
+  scriptPath: string,
+): { document: CursorSettingsDocument; added: string[]; replaced: string[]; removed: string[] } {
+  const hooks: CursorHookConfig = {}
+  const replaced: string[] = []
+  for (const [event, handlers] of Object.entries(existing.hooks ?? {})) {
+    const foreign = handlers.filter((handler) => !isOurCommand(handler.command, scriptPath))
+    if (foreign.length !== handlers.length) replaced.push(event)
+    if (foreign.length > 0) hooks[event] = foreign
+  }
+  return { document: { ...existing, version: 1, hooks }, added: [], replaced, removed: [] }
 }
 
 function readSettings(file: string): SettingsDocument {
@@ -317,13 +439,7 @@ function readSettings(file: string): SettingsDocument {
  * beside ours inside the same matcher group.
  */
 function isOurHandler(handler: HookHandler, scriptPath: string): boolean {
-  // The marker matches any NotifAI install, including one written by a
-  // different checkout — which is the whole point (NotifAI-0vk).
-  if (handler.command.includes(OWNER_MARKER)) return true
-  // Installs predating the marker are still ours, and still need removing.
-  return handler.command.includes(`${scriptPath}' hook `) ||
-    handler.command.includes(`${scriptPath}" hook `) ||
-    handler.command.includes(`${scriptPath} hook `)
+  return isOurCommand(handler.command, scriptPath)
 }
 
 /** Drops only our handlers, keeping the group and anyone else's handlers. */
@@ -408,7 +524,7 @@ export function removeHooks(existing: SettingsDocument, scriptPath: string): Mer
  * rename over the original — atomic within a directory on every platform we
  * support.
  */
-export function applyPlan(file: string, document: SettingsDocument): void {
+export function applyPlan(file: string, document: SettingsDocument | CursorSettingsDocument): void {
   mkdirSync(path.dirname(file), { recursive: true })
   const mode = targetMode(file)
   const temp = path.join(path.dirname(file), `.${path.basename(file)}.notifai-${process.pid}.tmp`)
@@ -458,6 +574,10 @@ export function loadSettings(file: string): SettingsDocument {
   return readSettings(file)
 }
 
+export function loadCursorSettings(file: string): CursorSettingsDocument {
+  return readCursorSettings(file)
+}
+
 // ---------------------------------------------------------------------------
 // Discovery — answering "will my hooks actually run?" without a live test
 // ---------------------------------------------------------------------------
@@ -486,8 +606,12 @@ export interface Installation {
  * up here at all", and a handler installed from a second checkout is still
  * evidence that it has (and is itself worth reporting — NotifAI-0vk).
  */
+function isNotifaiCommand(command: string): boolean {
+  return / hook (user-prompt-submit|stop|session-end)\b/.test(command)
+}
+
 function isNotifaiHandler(handler: HookHandler): boolean {
-  return / hook (user-prompt-submit|stop|session-end)\b/.test(handler.command)
+  return isNotifaiCommand(handler.command)
 }
 
 /** Every place either harness would read a NotifAI handler from. */
@@ -519,6 +643,17 @@ export function findInstallations(cwd: string, env: NodeJS.ProcessEnv = process.
         })
         continue
       }
+      if (harness === 'cursor') {
+        let document: CursorSettingsDocument
+        try {
+          document = readCursorSettings(file)
+        } catch {
+          continue
+        }
+        const handlers = locateCursorHandlers(document)
+        if (handlers.length > 0) found.push({ harness, file, global, handlers })
+        continue
+      }
       let document: SettingsDocument
       try {
         document = readSettings(file)
@@ -530,6 +665,18 @@ export function findInstallations(cwd: string, env: NodeJS.ProcessEnv = process.
     }
   }
   return found
+}
+
+function locateCursorHandlers(document: CursorSettingsDocument): InstalledHandler[] {
+  const handlers: InstalledHandler[] = []
+  for (const [event, eventHandlers] of Object.entries(document.hooks ?? {})) {
+    eventHandlers.forEach((handler, handlerIndex) => {
+      if (isNotifaiCommand(handler.command)) {
+        handlers.push({ event, groupIndex: 0, handlerIndex, command: handler.command })
+      }
+    })
+  }
+  return handlers
 }
 
 function locateHandlers(document: SettingsDocument): InstalledHandler[] {

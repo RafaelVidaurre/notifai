@@ -35,6 +35,12 @@ export interface HookEnvelope {
   hook_event_name?: string
   /** Set by the harness when this Stop follows a previous Stop continuation. */
   stop_hook_active?: boolean
+  /** Cursor's stable per-conversation identifier. */
+  conversation_id?: string
+  /** Cursor's project roots; the first is the hook's configuration root. */
+  workspace_roots?: string[]
+  /** Cursor increments this after each stop-hook automatic follow-up. */
+  loop_count?: number
 }
 
 export interface SessionState {
