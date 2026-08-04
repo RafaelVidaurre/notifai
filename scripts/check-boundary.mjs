@@ -21,6 +21,8 @@ const TOP_LEVEL_ALLOWLIST = new Set([
   '.git',
   '.gitignore',
   'README.md',
+  'AGENTS.md',
+  'CLAUDE.md',
   'LICENSE',
   'NOTICE',
   'SECURITY.md',

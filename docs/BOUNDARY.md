@@ -33,7 +33,11 @@ open decision tracked privately.
   regions, app names, sizing, or runbooks.
 - Signing material and secrets: keys, certificates, provisioning profiles,
   tokens, credentials — regardless of whether they look expired or
-  "not really secret".
+  "not really secret". This includes npm registry auth in every form: a
+  tracked `.npmrc` or `.env` carrying `_authToken`, a token pasted into a
+  script, doc, test fixture, or commit message. Publishing auth lives in
+  the maintainer's user-level credential store or CI OIDC/secrets, never
+  in-tree (see `AGENTS.md`).
 - Apple project configuration: `.xcconfig`, entitlements, team or bundle
   identifiers, App Store metadata.
 - Private product records: internal decision logs, incident evidence,
