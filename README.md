@@ -1,4 +1,4 @@
-# NotifAI CLI
+# NotifAI
 
 `notifai` lets software agents and local programs send native phone
 notifications to their user — completion notices, questions with answer
@@ -13,6 +13,8 @@ This repository is the public home of:
   request/response types, the status vocabulary, and capability
   negotiation. The CLI validates drafts offline against the same bundled
   capability documents the service enforces.
+- **`skills/notifai`** — the agent guidance skill: when to notify and how
+  to write notifications that work on a lock screen.
 
 The NotifAI service, companion apps, and their deployment live in a private
 repository. Everything the CLI sends and receives crosses the documented
@@ -45,7 +47,8 @@ The CLI binary builds to `apps/cli/dist/main.js`.
 
 ## The agent skill
 
-The optional NotifAI agent guidance skill is not part of this repository
-and is never installed by default. `notifai init` only writes project
-configuration; `notifai init --skills` is an explicit opt-in and fails
-cleanly in this build because no public skill source is configured yet.
+The NotifAI agent guidance skill lives in `skills/notifai/` and is never
+installed by default. `notifai init` only writes project configuration;
+`notifai init --skills` is an explicit opt-in, and it fails cleanly in
+this build because the installable skill source is not configured until
+the first tagged release exists to pin it to.

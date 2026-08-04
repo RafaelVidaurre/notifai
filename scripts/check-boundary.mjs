@@ -29,6 +29,7 @@ const TOP_LEVEL_ALLOWLIST = new Set([
   'scripts',
   'apps',
   'packages',
+  'skills',
   'package.json',
   'pnpm-workspace.yaml',
   'pnpm-lock.yaml',

@@ -1,5 +1,5 @@
 {
-  "name": "notifai-cli-monorepo",
+  "name": "notifai-monorepo",
   "private": true,
   "version": "0.1.0",
   "type": "module",

@@ -1171,11 +1171,11 @@ export async function configSetCommand(
 // init
 // ---------------------------------------------------------------------------
 
-/** Source reference the npx skills installer resolves this repo's skill from. */
 /**
- * Where `npx skills add` fetches the optional agent skill from. Unset until
- * the skill has an approved public home; the guard below keeps `--skills`
- * from installing anything before that decision is made.
+ * Where `npx skills add` fetches the optional agent skill from. The skill
+ * lives in this repository (`skills/notifai/`), but the source stays unset
+ * until a tagged release exists to pin it to; the guard below keeps
+ * `--skills` from installing anything before then.
  */
 const SKILLS_SOURCE = ''
 
