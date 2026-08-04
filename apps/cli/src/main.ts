@@ -120,7 +120,7 @@ program
   .option('--event <event>', 'agent event name, e.g. tests_passed')
   .option('--kind <kind>', 'what this is: update (default) | done | question')
   .option('--project <id>', 'project identifier, e.g. my-app (lazily registered)')
-  .option('--session <id>', 'sender session id shown as an avatar badge (env: NOTIFAI_SESSION)')
+  .option('--session <id>', 'session id; rendered as an avatar badge (env: NOTIFAI_SESSION)')
   .option('--device <id>', 'target a device id (repeatable)', (v: string, all: string[]) => [...all, v], [])
   .option('--all', 'target all routable devices (overrides configured devices)')
   .option('--ttl <seconds>', 'delivery window in seconds', (v: string) => Number(v))
@@ -207,7 +207,7 @@ program
     'answers to offer instead of free text (2-6); one value splits on commas, or repeat the flag',
     (v: string, all: string[]) => [...all, v], [],
   )
-  .option('--session <id>', 'harness session id (default: $NOTIFAI_SESSION_ID)')
+  .option('--session <id>', 'session id (default: the session working in this directory, else $NOTIFAI_SESSION)')
   .action((question: string, opts: { choice?: string[]; session?: string }) => {
     // commander's collector defaults to []; an empty list means "not asked".
     const flags: Parameters<typeof askCommand>[2] = {
@@ -267,7 +267,7 @@ config
   .description('Set a configuration value (machine-global by default)')
   .option('--project', 'write to the shared .notifai/config.toml instead')
   .option('--local', 'write to the gitignored .notifai/config.local.toml')
-  .option('--session <id>', 'apply only to one harness session')
+  .option('--session <id>', 'apply only to one session')
   .option('--yes', 'skip the confirmation gate')
   .action(
     async (
@@ -281,10 +281,16 @@ config
 
 program
   .command('init')
-  .description('Set up NotifAI in this project: write the project identifier')
+  .description(
+    'Set up NotifAI here, idempotently: sign-in, project id, agent skill, hooks. ' +
+      'Interactive at a human terminal; never prompts otherwise (agents: pass flags)',
+  )
   .option('--project-id <id>', 'project identifier slug (default: derived from the directory name)')
-  .option('--skills', 'also install the optional agent guidance skill via npx skills')
-  .action(async (opts: { projectId?: string; skills?: boolean }) => {
+  .option('--skills', 'install/update the agent guidance skill (npx skills)')
+  .option('--no-skills', 'skip the agent skill without being asked')
+  .option('--hooks', 'install harness hooks for away-question routing')
+  .option('--no-hooks', 'skip the hooks without being asked')
+  .action(async (opts: { projectId?: string; skills?: boolean; hooks?: boolean }) => {
     process.exit(await initCommand(deps, opts))
   })
 

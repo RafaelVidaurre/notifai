@@ -305,7 +305,7 @@ export function loadConfig(options: {
   const projectRaw = projectPath ? readTomlFile(projectPath) : {}
   const projectLocalPath = findProjectLocalConfigPath(cwd)
   const projectLocalRaw = projectLocalPath ? readTomlFile(projectLocalPath) : {}
-  const sessionId = options.sessionId ?? env['NOTIFAI_SESSION_ID']
+  const sessionId = options.sessionId ?? env['NOTIFAI_SESSION']
   const sessionPath = sessionId ? sessionConfigPath(sessionId, env) : null
   const sessionRaw = sessionPath && existsSync(sessionPath) ? readTomlFile(sessionPath) : {}
 

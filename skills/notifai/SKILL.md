@@ -60,10 +60,6 @@ bytes on APNs). Those are transport limits; the attention budget binds
 much earlier. The per-surface numbers below are its local expression on
 the current companion apps.
 
-Detail does not belong in the banner. The full error, the diff, the test
-output live in the transcript and the companion app — the notification's
-job is to say what happened and what you need, not to carry the evidence.
-
 ## When to notify
 
 Check the user's criteria first:
@@ -116,11 +112,14 @@ notifai send \
   gist, branch). Keep it to **one or two short sentences (~150 characters)**
   — banners show ~2 lines, and anything past that may never be read.
   No markdown — plain text on every channel.
-- `--session`: a stable opaque id for YOUR current session/run (reuse the
-  same value for every send in the session; your harness session id is
-  ideal). The user's device renders it as a small deterministic shape+color
-  badge on the project avatar so they can tell concurrent agents apart.
-  Exporting `NOTIFAI_SESSION` once has the same effect as passing the flag.
+- `--session`: your session id — ONE stable opaque id for your current
+  session/run, the same everywhere the CLI says "session". The user's device
+  renders it as a small deterministic shape+color badge on the project avatar
+  so they can tell concurrent agents apart. Exporting `NOTIFAI_SESSION` once
+  has the same effect as passing the flag, and is the better habit: `send`
+  badges with it, session-scoped config applies by it, and the hooks attribute
+  their pushes to it. (`notifai ask` needs no id at all — the hooks record
+  which session is working in this directory.)
 - `--event`: stable machine-readable name (`tests_passed`, `deploy_failed`,
   `input_needed`). Free-form but be consistent within a project.
 - `--project`: project identifier slug (lowercase letters, digits, `.`, `_`,
@@ -204,6 +203,14 @@ conversation and end your turn as you normally would. Then:
   (default 300, counted from when you ran `ask`) and only then goes to their
   devices. If they come back mid-wait it is abandoned and nothing is sent.
   Their answer resumes your turn as if they had typed it.
+- **Pushed but not answered in time** — the hook stops waiting after
+  `hook_reply_timeout_seconds` (default 180), but the question stays
+  answerable on their devices for up to an hour. If your next turn starts
+  without an answer in it, check the hook's transcript note for the request
+  id and run `notifai replies <request_id>` before re-asking — the answer
+  may already be there. Never register the same question again while the
+  first is still live; that is nagging, and superseding it discards the
+  answer window the user may be mid-way through using.
 
 This is strictly better than blocking: no wasted wait when they are present, no
 dead session when they are not. Use the blocking `--reply` form only when hooks
@@ -233,7 +240,10 @@ notifai config set ask_grace_seconds 600 --yes             # wait 10min first
 
 "Don't notify me so fast" means `ask_grace_seconds` (how long a question sits
 in the terminal first). "Stop deciding I've left when I'm just reading" means
-`away_after_seconds` (how much silence counts as absence). They are different
+`away_after_seconds` (how much silence counts as absence). "Give me longer to
+answer on my phone" means `hook_reply_timeout_seconds` (how long a pushed
+question blocks waiting for the answer, default 180 — the question itself
+stays answerable on the device long after the wait stops). They are different
 dials and the user's phrasing usually names one of them.
 
 Use `--local` rather than `--project` for anything expressing a personal
@@ -249,16 +259,39 @@ code 1 means rejected everywhere — surface that instead of assuming delivery.
 
 ## Setup in a new project
 
+`notifai init` is the one command to point the user at. It is idempotent —
+observing what is already set up and acting only on the gap — so re-running it
+is also how you check a setup. It covers: signing in, the project identifier,
+this skill, and the harness hooks, then reports device readiness or says
+"all set".
+
+It behaves differently depending on who runs it, on purpose:
+
+- **The user, at a terminal** — it walks them through the missing steps
+  interactively (including `notifai login`, which opens a browser only they
+  can approve). When setup is needed, prefer telling the user to run
+  `notifai init` themselves over assembling the pieces for them.
+- **You, the agent** — it never prompts and never installs anything optional
+  unattended. Anything it would have asked is a flag: `--skills` installs this
+  skill, `--hooks` installs the harness hooks, `--no-skills`/`--no-hooks`
+  silence the hints. It prints the steps only the user can do (signing in,
+  pairing a device) as exact commands — relay those instead of retrying.
+  This is true of the CLI generally: interactive affordances only ever appear
+  for a human at a TTY, and every operation has a non-interactive form. Do not
+  deliberately seek out interactive paths; if a command seems to hang, you have
+  found a bug, not a prompt worth answering (`NOTIFAI_NO_INPUT=1` force-kills
+  all interactivity).
+
 ```bash
-notifai init            # writes .notifai/config.toml with a project slug
-notifai hooks install   # route blocked prompts to their devices when they are away
-notifai doctor          # checks credential, server, devices
+notifai init            # idempotent one-stop setup; add --skills / --hooks when unattended
+notifai hooks install   # just the hooks: route away-questions to their devices
+notifai doctor          # full evidence trail: credential, server, devices, hooks
 ```
 
-`hooks install` wires the harness (Claude Code or Codex) so a question you
-registered with `notifai ask` reaches the user's phone **only** when they have
-gone quiet. It changes nothing while they are at the keyboard. Suggest it once;
-do not install it without being asked.
+`hooks install` wires the harness (Claude Code, Codex, or OpenCode) so a
+question you registered with `notifai ask` reaches the user's phone **only**
+when they have gone quiet. It changes nothing while they are at the keyboard.
+Suggest it once; do not install it without being asked.
 
 **The session that installs the hooks can never use them.** A harness reads its
 hooks once, at session start, so hooks you install now stay inert for the rest of
@@ -275,6 +308,11 @@ interactively and accept the prompt.
 Codex also reads project hooks from the **main repository**, not the working
 directory, so in a git worktree `hooks install` writes to the main checkout and
 covers every worktree of that repo. It says so when it does.
+
+On OpenCode the adapter is a generated plugin file rather than an entry in a
+settings document. NotifAI owns that whole file: install refuses to overwrite a
+plugin it did not write, and uninstall removes only its own. The same restart
+rule applies — OpenCode loads plugins once at start.
 
 `notifai doctor` answers "will this actually work?" without a live test: it
 reports the credential, server, devices, where hooks are installed, whether any

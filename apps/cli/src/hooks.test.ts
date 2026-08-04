@@ -13,7 +13,9 @@ import { EXIT, askCommand, hookRunCommand, type CommandDeps, type CommandIo } fr
 import { loadConfig, sanitizeSessionId } from './config.js'
 import {
   claimQuestionPush,
+  drainOrphanRetirements,
   isUserAway,
+  orphanRetirements,
   pruneAbandonedSessions,
   releaseQuestionPush,
   readProjectSession,
@@ -537,6 +539,102 @@ describe('superseding a live question (NotifAI-h02)', () => {
   })
 })
 
+describe('a question that outlives its session (NotifAI-lqq)', () => {
+  function retirements(h: Harness): { state: unknown; retires: unknown }[] {
+    return h.recorder.submitted
+      .filter((s) => s.draft.event === 'question_retired')
+      .map((s) => ({
+        state: s.draft.lifecycle?.state,
+        retires: s.draft.lifecycle?.retires_request_id,
+      }))
+  }
+
+  /** Escalate a question that nobody answers, so it is live on the devices. */
+  async function pushUnanswered(h: Harness, sessionId: string): Promise<string> {
+    writeSessionState(sessionId, h.env, { last_prompt_at: AWAY })
+    registerQuestion(sessionId, h.env, { question: 'Ship it?' })
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: sessionId }))
+    const requestId = h.recorder.receipts[0]
+    expect(requestId).toBeDefined()
+    return requestId!
+  }
+
+  it('retires a question the harness exited on, from a later session', async () => {
+    const h = harness([])
+    const first = await pushUnanswered(h, 'dead1')
+
+    // The user quits the harness. SessionEnd cannot reach the network, so the
+    // question must survive the state file it used to die with.
+    await hookRunCommand(h.deps, 'session-end', stdin({ session_id: 'dead1' }))
+    expect(readSessionState('dead1', h.env)).toEqual({})
+
+    // A different session's next hook holds a client and inherits the debt.
+    await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: 'next1' }))
+    expect(h.recorder.closed).toContain(first)
+    expect(retirements(h)).toContainEqual({ state: 'expired', retires: first })
+  })
+
+  it('carries parked retirements across SessionEnd too', async () => {
+    const h = harness([])
+    const first = await pushUnanswered(h, 'dead2')
+
+    // Superseded while offline: the retirement is parked, not sent.
+    registerQuestion('dead2', h.env, { question: 'Deploy it?' })
+    h.recorder.failSubmits = true
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'dead2' }))
+    h.recorder.failSubmits = false
+
+    await hookRunCommand(h.deps, 'session-end', stdin({ session_id: 'dead2' }))
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'next2' }))
+    expect(retirements(h)).toContainEqual({ state: 'superseded', retires: first })
+  })
+
+  it('keeps the debt when the drain fails, and drops entries past the TTL', async () => {
+    const h = harness([])
+    const first = await pushUnanswered(h, 'dead3')
+    await hookRunCommand(h.deps, 'session-end', stdin({ session_id: 'dead3' }))
+
+    // Still offline: the queue must survive a failed drain.
+    h.recorder.failSubmits = true
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'next3' }))
+    h.recorder.failSubmits = false
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'next3' }))
+    expect(retirements(h)).toContainEqual({ state: 'expired', retires: first })
+
+    // And a second drain does not send it twice.
+    const count = retirements(h).filter((r) => r.retires === first).length
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'next3' }))
+    expect(retirements(h).filter((r) => r.retires === first)).toHaveLength(count)
+  })
+
+  it('gives up on an orphan older than a day instead of queueing it for ever', async () => {
+    const h = harness([])
+    orphanRetirements(
+      h.env,
+      [{ request_id: 'req_old', collapse_key: 'ck_old', question: 'Old?', state: 'expired' }],
+      undefined,
+      NOW - 25 * 3600 * 1000,
+    )
+    const drained = await drainOrphanRetirements(
+      { client: h.deps.clientFactory('https://test.notifai.invalid', 'Bearer x'), config: loadConfig({ cwd: h.deps.cwd, env: h.env }) },
+      h.env,
+      NOW,
+    )
+    // Dropped as handled, but no retirement push was spent on it.
+    expect(drained).toContain('req_old')
+    expect(h.recorder.submitted).toHaveLength(0)
+  })
+
+  it('queues nothing for a session with nothing live on the devices', async () => {
+    const h = harness([])
+    registerQuestion('dead4', h.env, { question: 'Ship it?' })
+    await hookRunCommand(h.deps, 'session-end', stdin({ session_id: 'dead4' }))
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'next4' }))
+    expect(h.recorder.submitted).toHaveLength(0)
+    expect(h.recorder.closed).toHaveLength(0)
+  })
+})
+
 describe('hostile input', () => {
   it('never sends the credential to a base_url a repository asked for', async () => {
     const h = harness([reply({ text: 'Yes' })])
@@ -588,6 +686,24 @@ describe('ask registration', () => {
       }),
     ).toBe(EXIT.ok)
     expect(readSessionState('a2', h.env).pending?.choices).toEqual(['Yes, ship it', 'No, hold'])
+  })
+
+  it('resolves the session as flag, then hook pointer, then NOTIFAI_SESSION (D-066)', async () => {
+    // The exported id is often a chosen label while hook state is keyed by the
+    // harness's own id, so the pointer must outrank the env var.
+    const h = harness()
+    h.deps.env['NOTIFAI_SESSION'] = 'my-label'
+    await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: 'real1', cwd: h.deps.cwd }))
+    expect(askCommand(h.deps, 'Ship it?', {})).toBe(EXIT.ok)
+    expect(readSessionState('real1', h.env).pending?.question).toBe('Ship it?')
+    expect(readSessionState('my-label', h.env).pending).toBeUndefined()
+  })
+
+  it('falls back to NOTIFAI_SESSION where no hook has spoken', () => {
+    const h = harness()
+    h.deps.env['NOTIFAI_SESSION'] = 'solo-session'
+    expect(askCommand(h.deps, 'Ship it?', {})).toBe(EXIT.ok)
+    expect(readSessionState('solo-session', h.env).pending?.question).toBe('Ship it?')
   })
 })
 

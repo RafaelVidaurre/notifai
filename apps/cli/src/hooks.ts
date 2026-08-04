@@ -66,6 +66,35 @@ export interface RetiringQuestion {
   state: LifecycleEndState
 }
 
+/**
+ * A retirement that outlived its session (NotifAI-lqq).
+ *
+ * Per-session parking assumes some later hook in the SAME session will hold a
+ * client, and `SessionEnd` is exactly where that assumption breaks: it may not
+ * touch the network, and no hook for that session ever fires again. Deleting
+ * the state there lost the only copy of the delivered question's ids, so the
+ * phone kept an answerable question nobody was listening to. These entries are
+ * moved to a machine-global queue instead, drained by whichever session's hook
+ * next holds a client.
+ */
+export interface OrphanRetirement extends RetiringQuestion {
+  /** Label of the session that asked, so the retirement sync matches its badge. */
+  session?: string
+  /** Epoch ms when the entry was orphaned; entries beyond the TTL are dropped. */
+  enqueued_at: number
+}
+
+/**
+ * Past this, the question's reply window (3600s) has long expired server-side
+ * and the companion shows it as dead on next open anyway; pushing a retirement
+ * sync for it is noise. Also the backstop that keeps an unreachable server
+ * from growing the queue for ever.
+ */
+const ORPHAN_TTL_MS = 24 * 3600 * 1000
+
+/** More orphans than this means something is looping; keep the newest. */
+const ORPHAN_QUEUE_CAP = 50
+
 export interface PendingQuestion {
   question: string
   /**
@@ -79,7 +108,7 @@ export interface PendingQuestion {
    * Stored as a list rather than a comma-joined string so a label containing a
    * comma survives the round trip.
    */
-  choices?: string[] | string
+  choices?: string[]
   /** Set once the question has actually been pushed, so it can be retired. */
   request_id?: string
   collapse_key?: string
@@ -513,12 +542,15 @@ async function answerableDevices(ctx: HookContext): Promise<string[]> {
 }
 
 /**
- * How this agent is labelled on the user's devices.
+ * The session id this push is attributed to — the same one `send` badges with.
  *
  * The hook has always known `session_id` and never passed it on, so two agents
  * in separate worktrees produced identical notifications and the user could
- * answer the wrong one's question (NotifAI-zbv). An explicit `NOTIFAI_SESSION`
- * still wins, because a name the user chose beats a harness UUID.
+ * answer the wrong one's question (NotifAI-zbv). An exported `NOTIFAI_SESSION`
+ * still wins, for coherence rather than vanity: it is THE session id wherever
+ * it is set (D-066), so a session that exported one before launching must badge
+ * the same on its own sends and on the questions its hooks push. A name the
+ * user chose also outlives harness restarts, which a per-launch UUID cannot.
  */
 function sessionLabel(ctx: HookContext, envelope: HookEnvelope): string | undefined {
   const explicit = ctx.env['NOTIFAI_SESSION']
@@ -668,6 +700,88 @@ export async function drainRetirements(
   return retired
 }
 
+function orphanQueuePath(env: NodeJS.ProcessEnv): string {
+  return path.join(stateDir(env), 'retire-queue.json')
+}
+
+function readOrphanQueue(env: NodeJS.ProcessEnv): OrphanRetirement[] {
+  const file = orphanQueuePath(env)
+  if (!existsSync(file)) return []
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(file, 'utf8'))
+    return Array.isArray(parsed) ? (parsed as OrphanRetirement[]) : []
+  } catch {
+    // Same stance as session state: corruption fails closed to "nothing queued".
+    return []
+  }
+}
+
+function writeOrphanQueue(env: NodeJS.ProcessEnv, queue: OrphanRetirement[]): void {
+  const file = orphanQueuePath(env)
+  mkdirSync(path.dirname(file), { recursive: true })
+  writeFileSync(file, `${JSON.stringify(queue, null, 2)}\n`, { mode: 0o600 })
+}
+
+/** Move retirements into the global queue; deduped so a retry costs nothing. */
+export function orphanRetirements(
+  env: NodeJS.ProcessEnv,
+  entries: RetiringQuestion[],
+  session: string | undefined,
+  now: number,
+): void {
+  if (entries.length === 0) return
+  const queue = readOrphanQueue(env)
+  const known = new Set(queue.map((entry) => entry.request_id))
+  const added = entries
+    .filter((entry) => !known.has(entry.request_id))
+    .map((entry) => ({ ...entry, ...(session !== undefined ? { session } : {}), enqueued_at: now }))
+  if (added.length === 0) return
+  writeOrphanQueue(env, [...queue, ...added].slice(-ORPHAN_QUEUE_CAP))
+}
+
+/**
+ * Retire everything a dead session left behind. Failures stay queued for the
+ * next holder of a client; entries past the TTL are dropped as already dead.
+ */
+export async function drainOrphanRetirements(
+  ctx: RetireDeps,
+  env: NodeJS.ProcessEnv,
+  now: number,
+): Promise<string[]> {
+  const queue = readOrphanQueue(env)
+  if (queue.length === 0) return []
+
+  const done: string[] = []
+  for (const entry of queue) {
+    const age = now - entry.enqueued_at
+    // A negative age is a clock jump, not a fresh entry; retiring is idempotent
+    // and cheap, so treat it as due rather than letting it linger for ever.
+    if (age > ORPHAN_TTL_MS) {
+      done.push(entry.request_id)
+      continue
+    }
+    await closeQuietly(ctx, entry.request_id)
+    const sent = await retire(
+      ctx,
+      entry.collapse_key,
+      RETIREMENT_TITLES[entry.state],
+      entry.question,
+      entry.state,
+      entry.request_id,
+      undefined,
+      entry.session,
+    )
+    if (sent) done.push(entry.request_id)
+  }
+
+  // Re-read: another session's SessionEnd may have queued more while these were
+  // in flight, and clobbering its write would recreate the very loss this
+  // queue exists to prevent.
+  const current = readOrphanQueue(env).filter((entry) => !done.includes(entry.request_id))
+  writeOrphanQueue(env, current)
+  return done
+}
+
 // ---------------------------------------------------------------------------
 // UserPromptSubmit — the user is at the keyboard
 // ---------------------------------------------------------------------------
@@ -701,8 +815,10 @@ export async function handleUserPromptSubmit(
 
   if (pending !== undefined) parkForRetirement(sessionId, ctx.env, pending, 'answered_elsewhere')
   const retired = await drainRetirements(ctx, sessionId, ctx.env, sessionLabel(ctx, envelope))
-  if (retired.length > 0) {
-    notes.push(`retired question${retired.length > 1 ? 's' : ''} ${retired.join(', ')}`)
+  const orphaned = await drainOrphanRetirements(ctx, ctx.env, ctx.now())
+  const swept = [...retired, ...orphaned]
+  if (swept.length > 0) {
+    notes.push(`retired question${swept.length > 1 ? 's' : ''} ${swept.join(', ')}`)
   }
   return { notes }
 }
@@ -733,7 +849,10 @@ export async function handleStop(ctx: HookContext, envelope: HookEnvelope): Prom
   // retirement has nothing to do with whether *this* turn has a question to
   // escalate, and the turn that supersedes a question is very often the one
   // continuing from the previous answer.
-  const swept = await drainRetirements(ctx, sessionId, ctx.env, sessionLabel(ctx, envelope))
+  const swept = [
+    ...(await drainRetirements(ctx, sessionId, ctx.env, sessionLabel(ctx, envelope))),
+    ...(await drainOrphanRetirements(ctx, ctx.env, ctx.now())),
+  ]
   if (swept.length > 0) {
     notes.push(`retired superseded question${swept.length > 1 ? 's' : ''} ${swept.join(', ')}`)
   }
@@ -799,10 +918,7 @@ async function escalate(
   const asked = await askAndWait(ctx, {
     title: 'A question from your agent',
     body: pending.question,
-    // Tolerates the pre-list form left in a session file by an older build.
-    ...(pending.choices !== undefined
-      ? { choices: Array.isArray(pending.choices) ? pending.choices : [pending.choices] }
-      : {}),
+    ...(pending.choices !== undefined ? { choices: pending.choices } : {}),
     event: 'agent_question',
     session: sessionLabel(ctx, envelope),
     // Outlives the block, and stays open on purpose: the answer is still
@@ -880,12 +996,41 @@ async function escalate(
 
 /**
  * Claude Code gives SessionEnd hooks a 1.5-second shared budget and Codex 1
- * second, so this cannot make a network call. It drops the local marker and
- * lets the reply window expire on its own.
+ * second, so this cannot make a network call. It drops the local marker — but
+ * first moves anything still live on the user's devices into the global
+ * retirement queue, because this file was the only record of those ids and no
+ * hook for this session will ever run again (NotifAI-lqq). A question whose
+ * agent just exited can receive no answer, so it is orphaned as `expired`.
  */
-export function handleSessionEnd(env: NodeJS.ProcessEnv, envelope: HookEnvelope): HookOutcome {
-  if (envelope.session_id) clearSessionState(envelope.session_id, env)
-  return { notes: [] }
+export function handleSessionEnd(
+  env: NodeJS.ProcessEnv,
+  envelope: HookEnvelope,
+  now: number = Date.now(),
+): HookOutcome {
+  const notes: string[] = []
+  const sessionId = envelope.session_id
+  if (!sessionId) return { notes }
+
+  const state = readSessionState(sessionId, env)
+  const orphans: RetiringQuestion[] = [...(state.retiring ?? [])]
+  const pending = state.pending
+  if (pending?.request_id !== undefined && pending.collapse_key !== undefined) {
+    orphans.push({
+      request_id: pending.request_id,
+      collapse_key: pending.collapse_key,
+      question: pending.question,
+      state: 'expired',
+    })
+  }
+  if (orphans.length > 0) {
+    const label = env['NOTIFAI_SESSION']
+    orphanRetirements(env, orphans, label !== undefined && label !== '' ? label : sessionId, now)
+    notes.push(
+      `queued ${orphans.length} question${orphans.length > 1 ? 's' : ''} for retirement on the next hook`,
+    )
+  }
+  clearSessionState(sessionId, env)
+  return { notes }
 }
 
 // ---------------------------------------------------------------------------

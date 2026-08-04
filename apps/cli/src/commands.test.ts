@@ -345,7 +345,7 @@ describe('init', () => {
     expect(readFileSync(configPath, 'utf8')).toContain('project = "my-project-')
     // Safe by default: without an explicit --skills opt-in, init only writes
     // configuration and never spawns the skill installer.
-    expect(io.outLines.join('\n')).toContain('Skipped the optional agent skill')
+    expect(io.outLines.join('\n')).toContain('Agent skill not installed (optional)')
 
     io.outLines = []
     expect(await initCommand(deps, { skills: false })).toBe(EXIT.ok)
@@ -361,6 +361,53 @@ describe('init', () => {
     expect(readFileSync(path.join(cwd, '.notifai', 'config.toml'), 'utf8')).toContain(
       'project = "custom-name"',
     )
+  })
+
+  it('run unattended, names the optional steps instead of running or asking about them', async () => {
+    // NotifAI-chu.2: an agent's init must not reach for npx or a prompt.
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-agent-'))
+    const io = new CapturedIo()
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd }
+
+    expect(await initCommand(deps, {})).toBe(EXIT.ok)
+    const out = io.outLines.join('\n')
+    expect(out).toContain('notifai init --skills')
+    expect(out).toContain('notifai hooks install')
+    expect(out).not.toContain('Installing the notifai agent skill')
+  })
+
+  it('tells the user what only they can do when nothing is signed in', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-nocred-'))
+    const io = new CapturedIo()
+    const deps: CommandDeps = {
+      ...makeDeps(io, {} as ApiClient),
+      cwd,
+      store: { load: () => null, save: () => {}, clear: () => {}, describe: () => 'empty store' },
+    }
+
+    expect(await initCommand(deps, {})).toBe(EXIT.ok)
+    expect(io.outLines.join('\n')).toContain('sign in: notifai login')
+  })
+
+  it('offers a present human the sign-in and respects a refusal', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-human-'))
+    const asked: string[] = []
+    const io = new (class extends CapturedIo {
+      interactive = true
+      override async confirm(question: string) {
+        asked.push(question)
+        return false
+      }
+    })()
+    const deps: CommandDeps = {
+      ...makeDeps(io, {} as ApiClient),
+      cwd,
+      store: { load: () => null, save: () => {}, clear: () => {}, describe: () => 'empty store' },
+    }
+
+    expect(await initCommand(deps, {})).toBe(EXIT.ok)
+    expect(asked.some((q) => q.includes('Sign in'))).toBe(true)
+    expect(io.outLines.join('\n')).toContain('sign in: notifai login')
   })
 })
 

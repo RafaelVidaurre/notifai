@@ -81,9 +81,21 @@ import {
 export interface CommandIo {
   out(line: string): void
   err(line: string): void
-  /** Interactive confirmation; resolves false when not a TTY. */
-  confirm(question: string): Promise<boolean>
+  /** Interactive confirmation; resolves `fallback` (default false) when not interactive. */
+  confirm(question: string, fallback?: boolean): Promise<boolean>
   openUrl(url: string): void
+  /**
+   * True only when a human is demonstrably driving a terminal. Everything below
+   * is optional sugar that MUST only be called behind this flag: an agent that
+   * reaches an interactive prompt does not error, it hangs — the prompt
+   * libraries wait on stdin for ever — so the gate is bypass, not handling.
+   * Test fakes leave all of this undefined and exercise the plain paths.
+   */
+  interactive?: boolean
+  select?(message: string, options: { value: string; label: string; hint?: string }[]): Promise<string | null>
+  intro?(title: string): Promise<void>
+  outro?(message: string): Promise<void>
+  note?(message: string, title?: string): Promise<void>
 }
 
 export interface CommandDeps {
@@ -686,7 +698,8 @@ export async function hookRunCommand(
   // user than not having installed the hook at all.
   try {
     if (event === 'session-end') {
-      handleSessionEnd(deps.env, envelope)
+      const outcome = handleSessionEnd(deps.env, envelope, (deps.now ?? Date.now)())
+      for (const note of outcome.notes) deps.io.err(`notifai: ${note}`)
       return EXIT.ok
     }
 
@@ -815,12 +828,15 @@ export interface AskFlags {
 export function askCommand(deps: CommandDeps, question: string, flags: AskFlags): number {
   // An agent calling this gets no hook payload and no harness exports its
   // session id, so the UserPromptSubmit hook leaves a pointer keyed on the
-  // project directory and we read it back here.
+  // project directory and we read it back here. The pointer outranks the
+  // NOTIFAI_SESSION fallback deliberately: the exported id is often a chosen
+  // label rather than the harness's own id, and the hooks key state by the
+  // latter — the env var is only trusted when no hook has spoken (D-066).
   const now = (deps.now ?? Date.now)()
   const sessionId =
     flags.session ??
-    deps.env['NOTIFAI_SESSION_ID'] ??
     readProjectSession(deps.cwd, deps.env, now) ??
+    deps.env['NOTIFAI_SESSION'] ??
     undefined
   if (!sessionId) {
     for (const line of diagnoseMissingSession(deps)) deps.io.err(line)
@@ -1172,10 +1188,12 @@ export async function configSetCommand(
 // ---------------------------------------------------------------------------
 
 /**
- * Where `npx skills add` fetches the optional agent skill from. The skill
- * lives in this repository (`skills/notifai/`), but the source stays unset
- * until a tagged release exists to pin it to; the guard below keeps
- * `--skills` from installing anything before then.
+ * Where `npx skills add` fetches the optional agent skill from. The skill's
+ * canonical home is the public repository (RafaelVidaurre/notifai), which has
+ * nothing pushed to it yet, so no source can resolve today; the guard below
+ * keeps `--skills` from installing anything until a tagged release exists to
+ * pin this to. Never point this at the private repository — the installer
+ * command is printed to users, and only public sources belong in it.
  */
 const SKILLS_SOURCE = ''
 
@@ -1191,22 +1209,39 @@ export function projectSlugFrom(name: string): string {
 
 export interface InitFlags {
   projectId?: string
-  /** Explicit opt-in to the npx skills installation step. */
+  /**
+   * Install the agent guidance skill. Tri-state on purpose (NotifAI-chu.2):
+   * true installs, false skips silently, and undefined means "offer it when a
+   * human is present, do nothing when one is not" — an unattended run must
+   * never spawn npx against the network by default.
+   */
   skills?: boolean
+  /** Same tri-state, for the harness hooks. */
+  hooks?: boolean
 }
 
 /**
- * Set up NotifAI in the current project (D-039): ensure .notifai/config.toml
- * carries a project identifier. The agent guidance skill is an explicit
- * opt-in (`--skills`) — initialization must stay inert beyond writing project
- * configuration, and the skill must never install by default.
+ * The one command that takes a project from nothing to working (D-064).
+ *
+ * Idempotent by construction: every step first observes, then acts only on the
+ * gap, so re-running is how you check the setup as much as how you create it.
+ * With a human at a terminal it walks them through the missing pieces; run by
+ * an agent it never prompts — each optional step is answered by a flag, and
+ * whatever only the user can do (signing in, pairing a phone) is printed as
+ * the exact command to hand back to them.
  */
 export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<number> {
+  const interactive = deps.io.interactive === true
+  await deps.io.intro?.('NotifAI setup')
+  /** Steps only the user can perform, phrased as the command to run. */
+  const remaining: string[] = []
+  let failed = false
+
+  // -- Project identity ------------------------------------------------------
   const configPath = path.join(deps.cwd, '.notifai', 'config.toml')
   const existing = existsSync(configPath)
     ? (parseToml(readFileSync(configPath, 'utf8')) as Record<string, unknown>)
     : {}
-
   const project = flags.projectId ?? (typeof existing['project'] === 'string' ? existing['project'] : null)
   const slug = projectSlugFrom(project ?? path.basename(deps.cwd))
   if (existing['project'] !== slug) {
@@ -1218,32 +1253,116 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
     deps.io.out(`Project already configured as "${slug}" in ${configPath}`)
   }
 
-  if (flags.skills !== true) {
-    deps.io.out('Skipped the optional agent skill; run `notifai init --skills` to install it.')
-    return EXIT.ok
+  // -- Credential ------------------------------------------------------------
+  let credential = deps.store.load()
+  if (credential) {
+    deps.io.out(`Signed in as machine "${credential.machineName}" (${deps.store.describe()})`)
+  } else if (interactive && (await deps.io.confirm('Sign in now? (opens your browser)', true))) {
+    if ((await loginCommand(deps, {})) === EXIT.ok) credential = deps.store.load()
+    else remaining.push('sign in: notifai login')
+  } else {
+    remaining.push('sign in: notifai login')
   }
 
-  if (SKILLS_SOURCE === '') {
+  // -- Agent guidance skill --------------------------------------------------
+  const wantSkill =
+    SKILLS_SOURCE !== '' &&
+    (flags.skills ??
+      (interactive
+        ? await deps.io.confirm('Install/update the agent guidance skill in this repo?', true)
+        : false))
+  if (SKILLS_SOURCE === '' && flags.skills === true) {
+    failed = true
     deps.io.err('The optional agent skill is not published yet; this build has no skill source configured.')
-    return EXIT.failed
+  }
+  if (wantSkill) {
+    deps.io.out(`Installing the notifai agent skill (npx skills add ${SKILLS_SOURCE})...`)
+    const code = await new Promise<number>((resolve) => {
+      const child = spawn('npx', ['-y', 'skills', 'add', SKILLS_SOURCE, '--skill', 'notifai'], {
+        cwd: deps.cwd,
+        stdio: 'inherit',
+      })
+      child.on('error', () => resolve(1))
+      child.on('exit', (exitCode) => resolve(exitCode ?? 1))
+    })
+    if (code === 0) {
+      deps.io.out('Agent skill installed. Agents in this project can follow it.')
+    } else {
+      failed = true
+      deps.io.err('Skill installation failed — run it manually with:')
+      deps.io.err(`  npx skills add ${SKILLS_SOURCE} --skill notifai`)
+    }
+  } else if (flags.skills === undefined && !interactive) {
+    deps.io.out('Agent skill not installed (optional) — add it with: notifai init --skills')
   }
 
-  deps.io.out(`Installing the notifai agent skill (npx skills add ${SKILLS_SOURCE})...`)
-  const code = await new Promise<number>((resolve) => {
-    const child = spawn('npx', ['-y', 'skills', 'add', SKILLS_SOURCE, '--skill', 'notifai'], {
-      cwd: deps.cwd,
-      stdio: 'inherit',
-    })
-    child.on('error', () => resolve(1))
-    child.on('exit', (exitCode) => resolve(exitCode ?? 1))
-  })
-  if (code !== 0) {
-    deps.io.err('Skill installation failed — run it manually with:')
-    deps.io.err(`  npx skills add ${SKILLS_SOURCE} --skill notifai`)
-    return EXIT.failed
+  // -- Harness hooks ---------------------------------------------------------
+  const installations = findInstallations(deps.cwd, deps.env)
+  if (installations.length > 0) {
+    deps.io.out(
+      `Hooks installed: ${installations
+        .map((i) => `${i.harness} ${i.global ? 'global' : 'project'}`)
+        .join(', ')}`,
+    )
+  } else {
+    const wantHooks =
+      flags.hooks ??
+      (interactive
+        ? await deps.io.confirm(
+            'Install harness hooks, so questions reach your devices when you are away?',
+            true,
+          )
+        : false)
+    if (wantHooks) {
+      let harness = detectHarness(deps.cwd)
+      if (harness === null && interactive && deps.io.select) {
+        const picked = await deps.io.select(
+          'Which agent harness do you use here?',
+          HARNESSES.map((name) => ({ value: name, label: name })),
+        )
+        if (picked !== null) harness = picked as Harness
+      }
+      if (harness === null) {
+        failed = true
+        deps.io.err(
+          `Could not tell which harness to wire. Run: notifai hooks install --harness <${HARNESSES.join('|')}>`,
+        )
+      } else if (hooksInstallCommand(deps, { harness }) !== EXIT.ok) {
+        failed = true
+      }
+    } else if (flags.hooks === undefined && !interactive) {
+      deps.io.out('Hooks not installed (optional) — add question routing with: notifai hooks install')
+    }
   }
-  deps.io.out('Done. Agents in this project can now follow the notifai skill.')
-  return EXIT.ok
+
+  // -- Devices, when we can ask the server -----------------------------------
+  if (credential) {
+    try {
+      const config = loadConfig({ cwd: deps.cwd, env: deps.env })
+      const authed = authedClient(deps, config)
+      if (authed) {
+        const { devices } = await authed.client.listDevices()
+        const ready = devices.filter((d) => d.registration_healthy)
+        if (ready.length > 0) {
+          deps.io.out(`${ready.length} device(s) ready to receive notifications`)
+        } else {
+          remaining.push('pair a device: install a companion app, sign in, allow notifications')
+        }
+      }
+    } catch {
+      deps.io.out('Could not reach the server to check devices — `notifai doctor` when back online.')
+    }
+  }
+
+  // -- Verdict ---------------------------------------------------------------
+  if (remaining.length === 0 && !failed) {
+    deps.io.out('All set. Agents in this project can notify you and ask questions.')
+    await deps.io.outro?.('All set ✨')
+  } else {
+    for (const step of remaining) deps.io.out(`Still needed — ${step}`)
+    await deps.io.outro?.('Some steps remain (listed above)')
+  }
+  return failed ? EXIT.failed : EXIT.ok
 }
 
 // ---------------------------------------------------------------------------
@@ -1522,17 +1641,66 @@ function codexTrustCheck(
 // production IO
 // ---------------------------------------------------------------------------
 
-export function realIo(): CommandIo {
+/**
+ * Whether a human is driving this terminal.
+ *
+ * A TTY alone is NOT that evidence: agent harnesses frequently allocate a PTY
+ * for the commands they run, and a prompt shown to an agent does not fail — it
+ * hangs, because every prompt library waits on stdin rather than erroring. So
+ * this also honours `CI` and an explicit `NOTIFAI_NO_INPUT=1` escape hatch,
+ * and every interactive affordance stays strictly optional: anything `init`
+ * can ask, a flag can answer.
+ */
+function isHumanTerminal(env: NodeJS.ProcessEnv): boolean {
+  return (
+    process.stdin.isTTY === true &&
+    process.stdout.isTTY === true &&
+    (env['CI'] ?? '') === '' &&
+    (env['NOTIFAI_NO_INPUT'] ?? '') === ''
+  )
+}
+
+/**
+ * Lazy on purpose: the hook path runs in front of every prompt the user types,
+ * and must not pay for a prompt library it will never show.
+ */
+async function clack() {
+  return await import('@clack/prompts')
+}
+
+export function realIo(env: NodeJS.ProcessEnv = process.env): CommandIo {
+  const interactive = () => isHumanTerminal(env)
   return {
     out: (line) => console.log(line),
     err: (line) => console.error(line),
-    confirm: async (question) => {
-      if (!process.stdin.isTTY) return false
-      const readline = await import('node:readline/promises')
-      const rl = readline.createInterface({ input: process.stdin, output: process.stderr })
-      const answer = await rl.question(`${question} [y/N] `)
-      rl.close()
-      return /^y(es)?$/i.test(answer.trim())
+    get interactive() {
+      return interactive()
+    },
+    confirm: async (question, fallback = false) => {
+      if (!interactive()) return fallback
+      const p = await clack()
+      const answer = await p.confirm({ message: question, initialValue: fallback })
+      // Ctrl-C mid-prompt arrives as a cancel symbol, not a SIGINT; treat it
+      // as the safe answer rather than letting a Symbol escape into logic.
+      return p.isCancel(answer) ? false : answer
+    },
+    select: async (message, options) => {
+      if (!interactive()) return null
+      const p = await clack()
+      const answer = await p.select({ message, options })
+      return p.isCancel(answer) ? null : (answer as string)
+    },
+    intro: async (title) => {
+      if (!interactive()) return
+      ;(await clack()).intro(title)
+    },
+    outro: async (message) => {
+      if (!interactive()) return
+      ;(await clack()).outro(message)
+    },
+    note: async (message, title) => {
+      if (!interactive()) return
+      ;(await clack()).note(message, title)
     },
     openUrl: (url) => {
       const command =

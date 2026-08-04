@@ -16,6 +16,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@clack/prompts": "^1.7.0",
     "@notifai/protocol": "workspace:*",
     "commander": "^14.0.0",
     "smol-toml": "^1.4.0"
