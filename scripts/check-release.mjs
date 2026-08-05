@@ -53,6 +53,15 @@ for (const entry of packages) {
     `${manifest.name}: files allowlist must be dist, src, tsconfig.json`,
   )
 
+  for (const field of ['dependencies', 'optionalDependencies', 'peerDependencies']) {
+    for (const [dependency, specifier] of Object.entries(manifest[field] ?? {})) {
+      requireValue(
+        !specifier.startsWith('workspace:'),
+        `${manifest.name}: ${field}.${dependency} must use a publishable semver specifier, not ${specifier}`,
+      )
+    }
+  }
+
   let packed
   try {
     packed = JSON.parse(

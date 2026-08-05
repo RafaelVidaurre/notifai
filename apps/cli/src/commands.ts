@@ -1453,7 +1453,7 @@ export async function configSetCommand(
  * 1.5.x, `owner/repo@name` selects a skill; a Git ref belongs after `#`.
  * Keep this immutable and public because the command is printed to users.
  */
-export const SKILLS_SOURCE = 'RafaelVidaurre/notifai#v0.1.6'
+export const SKILLS_SOURCE = 'RafaelVidaurre/notifai#v0.1.7'
 
 function pinnedSkillInstalled(cwd: string): boolean {
   const match = /^([^#]+)#(.+)$/.exec(SKILLS_SOURCE)

@@ -1064,7 +1064,7 @@ describe('init', () => {
   })
 
   it('pins the skill installer to the tagged public release syntax', () => {
-    expect(SKILLS_SOURCE).toBe('RafaelVidaurre/notifai#v0.1.6')
+    expect(SKILLS_SOURCE).toBe('RafaelVidaurre/notifai#v0.1.7')
     expect(SKILLS_SOURCE).not.toContain('@v')
   })
 
@@ -1080,7 +1080,7 @@ describe('init', () => {
           skills: {
             notifai: {
               source: 'RafaelVidaurre/notifai',
-              ref: 'v0.1.6',
+              ref: 'v0.1.7',
               sourceType: 'github',
               skillPath: 'skills/notifai/SKILL.md',
             },

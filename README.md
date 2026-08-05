@@ -25,7 +25,7 @@ depends on private code. `docs/BOUNDARY.md` states the policy and
 ## Status
 
 NotifAI is pre-1.0 and published under Apache-2.0. The current packages are
-`@raidiant/notifai` 0.1.6 and `@raidiant/notifai-protocol` 0.1.1; their
+`@raidiant/notifai` 0.1.7 and `@raidiant/notifai-protocol` 0.1.1; their
 versions advance independently. Only the latest published version is
 supported.
 
@@ -50,5 +50,5 @@ The CLI binary builds to `apps/cli/dist/main.js`.
 The NotifAI agent guidance skill lives in `skills/notifai/` and is never
 installed by default. `notifai init` coordinates project configuration,
 sign-in, optional harness hooks, and device readiness. `notifai init --skills`
-installs the skill from the immutable public tag `v0.1.6`; the underlying
-installer source is `RafaelVidaurre/notifai#v0.1.6` (`#` selects a Git ref).
+installs the skill from the immutable public tag `v0.1.7`; the underlying
+installer source is `RafaelVidaurre/notifai#v0.1.7` (`#` selects a Git ref).

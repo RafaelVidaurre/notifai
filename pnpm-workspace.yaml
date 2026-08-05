@@ -1,5 +1,10 @@
 packages:
   - packages/*
   - apps/*
+
+# Keep the local protocol package as the development source while publishable
+# manifests use a concrete semver dependency that npm can install.
+linkWorkspacePackages: true
+
 allowBuilds:
   esbuild: true
