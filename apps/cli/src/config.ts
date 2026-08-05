@@ -16,9 +16,10 @@ import type { CLI_SOUNDS, INTERRUPTION_LEVELS } from '@notifai/protocol'
  * than in the agent's context, because context is lost to compaction and a
  * preference that evaporates mid-session is worse than none.
  *
- * `project-local` is `.notifai/config.local.toml`, gitignored. `.notifai/
- * config.toml` is committed and therefore shared, so it must not be where a
- * personal "route my questions to my phone" preference lands.
+ * `project-local` is `.notifai/config.local.toml`, intended to be gitignored.
+ * `.notifai/config.toml` is intended for committed, shared configuration, so it
+ * must not be where a personal "route my questions to my devices" preference
+ * lands. The CLI does not edit a repository's ignore rules or create commits.
  *
  * `config show --explain` surfaces the winning layer per key.
  */
@@ -51,7 +52,7 @@ export interface CliConfig {
   project: ResolvedValue<string | null>
   /** Free-text notification criteria agents consult before sending (D-039). */
   notify_criteria: ResolvedValue<string | null>
-  /** Route a blocked agent's question to the phone when the user is away. */
+  /** Route a registered agent question to companion devices after the presence gate. */
   ask_notifications: ResolvedValue<boolean>
   /**
    * Whether being at this machine suppresses a question (U-068: "Even if I'm on
@@ -70,15 +71,17 @@ export interface CliConfig {
    */
   require_idle: ResolvedValue<boolean>
   /**
-   * Silence since the user's last prompt before this session counts as
-   * unattended. Below it the hooks stay out of the way entirely, because a
-   * blocking hook also blocks the terminal prompt the present user would use.
+   * Keyboard/mouse idle time after which this machine counts as unattended.
+   * When the OS idle signal is unavailable, silence since the user's last prompt
+   * is the conservative fallback. Below the threshold the hooks stay out of the
+   * way entirely, because a blocking hook also blocks the terminal prompt the
+   * present user would use.
    *
    * Only consulted while `require_idle` is on.
    */
   away_after_seconds: ResolvedValue<number>
   /**
-   * How long a hook blocks waiting for a phone answer before falling through
+   * How long a hook blocks waiting for a companion-device answer before falling through
    * to the harness's own prompt. Must stay under the harness hook timeout
    * (600s in both Claude Code and Codex) or the harness kills us mid-wait.
    */
@@ -120,7 +123,7 @@ export const BOOLEAN_CONFIG_KEYS: readonly ConfigKey[] = [
   'require_idle',
 ]
 
-/** Keys whose TOML value must parse as a positive integer. */
+/** Keys whose TOML value must parse as an integer within its configured bounds. */
 export const NUMERIC_CONFIG_KEYS: readonly ConfigKey[] = [
   'wait_seconds',
   'ttl_seconds',
@@ -234,7 +237,7 @@ export function findProjectConfigPath(startDir: string): string | null {
   return findProjectFile(startDir, 'config.toml')
 }
 
-/** Gitignored sibling of the committed project config. */
+/** Personal sibling of the shared project config; callers should keep it gitignored. */
 export function findProjectLocalConfigPath(startDir: string): string | null {
   return findProjectFile(startDir, 'config.local.toml')
 }

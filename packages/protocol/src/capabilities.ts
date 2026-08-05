@@ -72,13 +72,18 @@ export const IOS_CAPABILITIES_V1: CapabilityDocument = {
     {
       path: 'platform.ios.category',
       status: 'unsupported',
-      reason: 'Action categories belong to notification-interaction design, which D-028 defers from V1.',
+      reason: 'Caller-selected categories are unsupported; the companion registers fixed, app-owned reply categories.',
     },
     {
       path: 'platform.ios.interruption_level',
       status: 'supported',
-      constraints: { allowed: [...INTERRUPTION_LEVELS], default: 'active' },
-      reason: 'critical is unsupported: it requires a special Apple entitlement NotifAI does not hold.',
+      constraints: {
+        allowed: [...INTERRUPTION_LEVELS],
+        downgraded_values: ['time_sensitive'],
+        default: 'active',
+      },
+      reason:
+        'passive and active are supported; time_sensitive is accepted but Time Sensitive breakthrough is unavailable. critical is unsupported.',
     },
     { path: 'platform.ios.relevance_score', status: 'supported' },
     { path: 'platform.ios.target_content_id', status: 'supported' },
@@ -109,8 +114,8 @@ export const IOS_CAPABILITIES_V1: CapabilityDocument = {
  * macOS UserNotifications support verified against Apple's UNNotificationContent
  * surface: title, subtitle, body, sound, badge, threadIdentifier,
  * interruptionLevel, relevanceScore, targetContentIdentifier, and attachments.
- * Remote image attachments require the companion's notification service
- * extension to download and add the image before display.
+ * The framework exposes attachments, but the current companion path does not
+ * attach remote images; the catalog reports that delivery downgrade below.
  * https://developer.apple.com/documentation/usernotifications/unnotificationcontent
  */
 export const MACOS_CAPABILITIES_V1: CapabilityDocument = {
@@ -134,9 +139,9 @@ export const MACOS_CAPABILITIES_V1: CapabilityDocument = {
     { path: 'reply', status: 'supported' },
     {
       path: 'presentation.image',
-      status: 'supported',
-      constraints: { max_bytes: 10 * 1024 * 1024, media_types: ['image/jpeg', 'image/png', 'image/gif'] },
-      reason: 'Attached through the Notification Service Extension; text remains intelligible if media retrieval fails.',
+      status: 'downgraded',
+      reason:
+        'Remote images are currently omitted on macOS; the text notification is still delivered.',
     },
     { path: 'platform.macos.sound', status: 'supported', constraints: { allowed: [...MACOS_SOUNDS, null] } },
     { path: 'platform.macos.badge', status: 'supported' },
@@ -144,13 +149,18 @@ export const MACOS_CAPABILITIES_V1: CapabilityDocument = {
     {
       path: 'platform.macos.category',
       status: 'unsupported',
-      reason: 'Action categories belong to notification-interaction design, which D-028 defers from V1.',
+      reason: 'Caller-selected categories are unsupported; the companion registers fixed, app-owned reply categories.',
     },
     {
       path: 'platform.macos.interruption_level',
       status: 'supported',
-      constraints: { allowed: [...INTERRUPTION_LEVELS], default: 'active' },
-      reason: 'critical is unsupported: it requires a special Apple entitlement NotifAI does not hold.',
+      constraints: {
+        allowed: [...INTERRUPTION_LEVELS],
+        downgraded_values: ['time_sensitive'],
+        default: 'active',
+      },
+      reason:
+        'passive and active are supported; time_sensitive is accepted but Time Sensitive breakthrough is unavailable. critical is unsupported.',
     },
     { path: 'platform.macos.relevance_score', status: 'supported' },
     { path: 'platform.macos.target_content_id', status: 'supported' },
@@ -325,6 +335,25 @@ export function validateDraft(
       })
     }
 
+    for (const field of document.fields) {
+      const value = draftValueAtPath(typed, field.path)
+      const downgradedValues = field.constraints?.downgraded_values
+      const isDowngradedValue =
+        Array.isArray(downgradedValues) && downgradedValues.includes(value)
+      if (
+        value !== undefined &&
+        value !== null &&
+        (field.status === 'downgraded' || isDowngradedValue)
+      ) {
+        warnings.push({
+          path: field.path,
+          message:
+            field.reason ??
+            `The field ${field.path} is delivered with reduced behavior on ${document.platform}.`,
+        })
+      }
+    }
+
     const estimated = estimateApnsPayloadBytes(typed, document.platform)
     if (estimated > document.payload_limit_bytes) {
       errors.push({
@@ -344,6 +373,15 @@ export function validateDraft(
 function findReason(capabilities: CapabilityDocument, path: string): string {
   const field = capabilities.fields.find((f) => f.path === path)
   return field?.reason ?? `The field ${path} is not supported on ${capabilities.platform}.`
+}
+
+function draftValueAtPath(draft: NotificationDraftT, path: string): unknown {
+  let value: unknown = draft
+  for (const segment of path.split('.')) {
+    if (typeof value !== 'object' || value === null || !(segment in value)) return undefined
+    value = (value as Record<string, unknown>)[segment]
+  }
+  return value
 }
 
 /**

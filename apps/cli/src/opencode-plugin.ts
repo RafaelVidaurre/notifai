@@ -11,16 +11,16 @@ import { configHome } from './install-hooks.js'
  * Codex invoke, and every decision — presence, the grace window, the reply
  * wait, retirement — stays in one place.
  *
- * The three joints map onto the same three events:
+ * The three lifecycle joints map onto the same three events. OpenCode exposes
+ * `chat.message` as a direct hook, while session lifecycle notifications arrive
+ * through its generic `event` hook:
  *
  *   chat.message   -> user-prompt-submit   (the user is at the keyboard)
  *   session.idle   -> stop                 (the turn ended; escalate)
- *   permission.ask -> stop, decision read  (a blocked prompt to answer)
+ *   session.deleted -> session-end         (retire local session state)
  *
- * `permission.ask` is the interesting one: its signature is
- * `(input, output) => Promise<void>` and the plugin *writes* the decision into
- * `output.status`, which is exactly the shape a remote answer needs. It is
- * async, so the plugin can block on the phone the way a command hook does.
+ * Permission prompts deliberately stay in OpenCode. The CLI question flow
+ * only escalates questions explicitly registered with `notifai ask`.
  */
 
 /** Marker line; also how an install from another checkout is recognised. */
@@ -28,6 +28,9 @@ export const OPENCODE_PLUGIN_MARKER = '// notifai managed opencode plugin'
 
 /** Filename we own inside whichever plugins directory is being written. */
 export const OPENCODE_PLUGIN_FILENAME = 'notifai.js'
+
+/** Bump when an installed generated file must be rewritten to remain functional. */
+const OPENCODE_ADAPTER_VERSION = 2
 
 export function opencodePluginDir(
   global: boolean,
@@ -50,7 +53,7 @@ export function opencodePluginPath(
 export interface OpencodePluginOptions {
   execPath: string
   scriptPath: string
-  /** Must stay under OpenCode's own patience for a plugin hook. */
+  /** Child-process lifetime; covers grace, reply wait, and teardown headroom. */
   timeoutSeconds: number
 }
 
@@ -61,12 +64,9 @@ export interface OpencodePluginOptions {
  * embed the absolute interpreter and script paths — a bare `notifai` on PATH
  * fails silently under a plugin host the same way it does under a hook shell.
  *
- * Everything it does is: build the hook envelope OpenCode's event gives it,
- * hand it to the CLI on stdin, and — for a permission request — read the
- * decision back off stdout. It deliberately fails open: any error, timeout or
- * unparseable answer leaves `output.status` untouched, so OpenCode falls
- * through to asking the user in the terminal. A notification adapter must never
- * be the reason a permission gets granted.
+ * Everything it does is build the hook envelope OpenCode's event gives it and
+ * hand that to the CLI on stdin. It deliberately fails open: an adapter error
+ * never changes OpenCode's own behavior.
  */
 export function opencodePluginSource(options: OpencodePluginOptions): string {
   const { execPath, scriptPath, timeoutSeconds } = options
@@ -78,11 +78,11 @@ import { spawn } from "node:child_process"
 const EXEC = ${JSON.stringify(execPath)}
 const SCRIPT = ${JSON.stringify(scriptPath)}
 const TIMEOUT_MS = ${timeoutSeconds * 1000}
+const ADAPTER_VERSION = ${OPENCODE_ADAPTER_VERSION}
 
 /**
  * Runs \`notifai hook <event>\`, feeding it the same JSON envelope the other
- * harnesses send. Resolves to stdout, or null if anything at all went wrong —
- * the caller treats null as "no opinion", which is what keeps this fail-open.
+ * harnesses send. Resolves to stdout, or null if anything at all went wrong.
  */
 function runHook(event, envelope) {
   return new Promise((resolve) => {
@@ -115,8 +115,7 @@ function runHook(event, envelope) {
     child.stdout?.on("data", (chunk) => {
       stdout += chunk
     })
-    // Hook stderr is diagnostics; OpenCode has nowhere to show it and it must
-    // not be mistaken for the decision.
+    // Hook stderr is diagnostics, not plugin output; discard it here.
     child.stderr?.resume()
     child.on("error", () => finish(null))
     child.on("close", () => finish(stdout))
@@ -127,20 +126,6 @@ function runHook(event, envelope) {
       finish(null)
     }
   })
-}
-
-/** The Stop hook answers with a Claude-Code-shaped decision block or nothing. */
-function decisionFrom(stdout) {
-  if (typeof stdout !== "string" || stdout.trim() === "") return null
-  try {
-    const parsed = JSON.parse(stdout)
-    if (parsed && parsed.decision === "block" && typeof parsed.reason === "string") {
-      return parsed.reason
-    }
-  } catch {
-    // Not a decision. Falling through to the terminal is the safe reading.
-  }
-  return null
 }
 
 export const NotifAIPlugin = async ({ directory }) => {
@@ -159,52 +144,21 @@ export const NotifAIPlugin = async ({ directory }) => {
       })
     },
 
-    /** The turn ended: escalate a question registered with \`notifai ask\`. */
-    "session.idle": async (input) => {
-      await runHook("stop", {
-        session_id: input?.sessionID,
-        cwd,
-        hook_event_name: "Stop",
-      })
-    },
-
-    /**
-     * A blocked permission prompt. The plugin writes the decision, so an answer
-     * from the phone can allow or deny without the user touching the terminal.
-     *
-     * Only an explicit answer moves it. Anything else — no answer, a timeout, a
-     * server that never replied — leaves \`output.status\` alone so OpenCode
-     * asks the user itself. A notification adapter must never be the reason a
-     * permission is granted.
-     */
-    "permission.ask": async (input, output) => {
-      const stdout = await runHook("stop", {
-        session_id: input?.sessionID,
-        cwd,
-        hook_event_name: "Stop",
-        permission: {
-          id: input?.id,
-          type: input?.type,
-          title: input?.title,
-        },
-      })
-      const answer = decisionFrom(stdout)
-      if (answer === null) return
-      const normalized = answer.trim().toLowerCase()
-      if (normalized.startsWith("allow") || normalized.startsWith("yes")) {
-        output.status = "allow"
-      } else if (normalized.startsWith("deny") || normalized.startsWith("no")) {
-        output.status = "deny"
+    /** Session lifecycle events are delivered through OpenCode's event bus. */
+    event: async ({ event }) => {
+      if (event?.type === "session.idle") {
+        await runHook("stop", {
+          session_id: event?.properties?.sessionID,
+          cwd,
+          hook_event_name: "Stop",
+        })
+      } else if (event?.type === "session.deleted") {
+        await runHook("session-end", {
+          session_id: event?.properties?.info?.id,
+          cwd,
+          hook_event_name: "SessionEnd",
+        })
       }
-    },
-
-    /** Drop local session state; deliberately does no network work. */
-    "session.deleted": async (input) => {
-      await runHook("session-end", {
-        session_id: input?.sessionID,
-        cwd,
-        hook_event_name: "SessionEnd",
-      })
     },
   }
 }
@@ -229,13 +183,20 @@ export function isOurOpencodePlugin(contents: string): boolean {
  * Returns null for a plugin we did not generate, or one whose constants have
  * been edited out of recognisable shape.
  */
-export function opencodePluginTarget(contents: string): { exec: string; script: string } | null {
+export function opencodePluginTarget(
+  contents: string,
+): { exec: string; script: string; current: boolean } | null {
   if (!isOurOpencodePlugin(contents)) return null
   const exec = /^const EXEC = (".*")$/m.exec(contents)?.[1]
   const script = /^const SCRIPT = (".*")$/m.exec(contents)?.[1]
+  const version = Number(/^const ADAPTER_VERSION = (\d+)$/m.exec(contents)?.[1] ?? 1)
   if (exec === undefined || script === undefined) return null
   try {
-    return { exec: JSON.parse(exec) as string, script: JSON.parse(script) as string }
+    return {
+      exec: JSON.parse(exec) as string,
+      script: JSON.parse(script) as string,
+      current: version === OPENCODE_ADAPTER_VERSION,
+    }
   } catch {
     return null
   }

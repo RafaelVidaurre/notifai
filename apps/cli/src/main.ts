@@ -94,7 +94,7 @@ auth
 
 program
   .command('devices')
-  .description('List devices that can receive notifications')
+  .description('List registered devices and their delivery readiness')
   .option('--json', 'machine-readable output')
   .action(async (opts: { json?: boolean }) => {
     process.exit(await devicesCommand(deps, opts))
@@ -118,9 +118,9 @@ program
   .option('--detail <markdown>', 'long-form markdown shown only in the app, never on the banner')
   .option('--detail-file <path>', 'read --detail from a file (use - for stdin)')
   .option('--event <event>', 'agent event name, e.g. tests_passed')
-  .option('--kind <kind>', 'what this is: update (default) | done | question')
+  .option('--kind <kind>', 'what this is: update (default) | done | question (requires --reply)')
   .option('--project <id>', 'project identifier, e.g. my-app (lazily registered)')
-  .option('--session <id>', 'session id; rendered as an avatar badge (env: NOTIFAI_SESSION)')
+  .option('--session <id>', 'session identity (env: NOTIFAI_SESSION); presentation varies by surface')
   .option('--device <id>', 'target a device id (repeatable)', (v: string, all: string[]) => [...all, v], [])
   .option('--all', 'target all routable devices (overrides configured devices)')
   .option('--ttl <seconds>', 'delivery window in seconds', (v: string) => Number(v))
@@ -133,13 +133,13 @@ program
   .option('--relevance <score>', '0..1 relevance score', (v: string) => Number(v))
   .option('--target-content-id <id>')
   .option('--data <key=value>', 'custom data (repeatable)', (v: string, all: string[]) => [...all, v], [])
-  .option('--image <media_id>', 'attach an uploaded image')
+  .option('--image <path|url|media_id>', 'upload or attach an image')
   .option('--reply', 'enable the inline reply action and block for the answer')
   .option('--reply-timeout <seconds>', 'how long to wait for a reply (default: 900)', (v: string) => Number(v))
   .option('--reply-window <seconds>', 'how long the server accepts a reply (default: 86400)', (v: string) => Number(v))
   .option(
     '--reply-choice <label>',
-    'ask a closed question (2-6 answers); one value splits on commas, or repeat the flag',
+    'with --reply, ask a closed question (2-6 answers); one value splits on commas, or repeat the flag',
     (v: string, all: string[]) => [...all, v], [],
   )
   .option('--no-block', 'send with the reply action without waiting for an answer')
@@ -201,7 +201,7 @@ program
 
 program
   .command('ask <question>')
-  .description('Register a question to push to your devices if you are away when the turn ends')
+  .description('Register a question for the turn-end hook to route under your presence settings')
   .option(
     '--choice <label>',
     'answers to offer instead of free text (2-6); one value splits on commas, or repeat the flag',
@@ -238,11 +238,14 @@ program
     )
   })
 
-const hooks = program.command('hooks').description('Install harness hooks for questions and permissions')
+const hooks = program.command('hooks').description('Install harness hooks for registered-question routing')
 hooks
   .command('install')
-  .description('Wire this harness to route blocked prompts to your devices when you are away')
-  .option('--harness <name>', 'claude-code | codex | cursor | opencode (default: detected)')
+  .description('Wire this harness to route registered questions to your devices')
+  .option(
+    '--harness <name>',
+    'claude-code | codex | cursor | opencode (default: detected; OpenCode cannot resume an idle turn from an answer)',
+  )
   .option('--global', 'install for every project instead of just this one')
   .action((opts: { harness?: string; global?: boolean }) => {
     process.exit(hooksInstallCommand(deps, opts))
@@ -267,9 +270,11 @@ config
   })
 config
   .command('set <key> <value>')
-  .description('Set a configuration value (choose a layer interactively; machine-global unattended)')
+  .description(
+    'Set a configuration value (choose a layer interactively; unattended defaults machine-global and requires --yes)',
+  )
   .option('--project', 'write to the shared .notifai/config.toml instead')
-  .option('--local', 'write to the gitignored .notifai/config.local.toml')
+  .option('--local', 'write to personal .notifai/config.local.toml (keep it gitignored)')
   .option('--session <id>', 'apply only to one session')
   .option('--yes', 'skip the confirmation gate')
   .action(
@@ -285,13 +290,13 @@ config
 program
   .command('init')
   .description(
-    'Set up NotifAI here, idempotently: sign-in, project id, agent skill, hooks. ' +
+    'Set up NotifAI here, idempotently: sign-in, project id, hooks, device readiness. ' +
       'Interactive at a human terminal; never prompts otherwise (agents: pass flags)',
   )
   .option('--project-id <id>', 'project identifier slug (default: derived from the directory name)')
-  .option('--skills', 'install/update the agent guidance skill (npx skills)')
-  .option('--no-skills', 'skip the agent skill without being asked')
-  .option('--hooks', 'install harness hooks for away-question routing')
+  .option('--skills', 'reserved: this build has no published agent-skill source and exits with an error')
+  .option('--no-skills', 'suppress the optional agent-skill status line')
+  .option('--hooks', 'install harness hooks for registered-question routing')
   .option('--no-hooks', 'skip the hooks without being asked')
   .action(async (opts: { projectId?: string; skills?: boolean; hooks?: boolean }) => {
     process.exit(await initCommand(deps, opts))
@@ -299,7 +304,7 @@ program
 
 program
   .command('doctor')
-  .description('Check config, credential, server, auth, and device readiness')
+  .description('Audit config, credential, server, contract, device, and hook readiness (no live send)')
   .option('--json', 'machine-readable output')
   .action(async (opts: { json?: boolean }) => {
     process.exit(await doctorCommand(deps, opts))

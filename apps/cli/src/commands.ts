@@ -24,6 +24,7 @@ import {
   BOOLEAN_CONFIG_KEYS,
   CONFIG_KEYS,
   NUMERIC_CONFIG_KEYS,
+  configBounds,
   findProjectConfigPath,
   findProjectLocalConfigPath,
   globalConfigPath,
@@ -49,12 +50,11 @@ import { readIdleSeconds } from './idle.js'
 import {
   HARNESSES,
   applyPlan,
+  blockingHookTimeoutSeconds,
   buildCursorHookConfig,
   buildHookConfig,
-  codexConfigPath,
   codexLayerDir,
   codexProjectRoot,
-  codexTrustKey,
   detectHarness,
   findInstallations,
   handlerEvent,
@@ -358,8 +358,14 @@ export async function sendCommand(
     baseUrl?: string
   },
 ): Promise<number> {
-  if (!flags.reply && (flags.replyTimeout !== undefined || flags.replyWindow !== undefined || flags.noBlock)) {
-    deps.io.err('Use --reply with --reply-timeout, --reply-window, or --no-block.')
+  const hasReplyChoice = Array.isArray(flags.replyChoice)
+    ? flags.replyChoice.length > 0
+    : flags.replyChoice !== undefined
+  if (
+    !flags.reply &&
+    (flags.replyTimeout !== undefined || flags.replyWindow !== undefined || flags.noBlock || hasReplyChoice)
+  ) {
+    deps.io.err('Use --reply with --reply-timeout, --reply-window, --reply-choice, or --no-block.')
     return EXIT.usage
   }
   const replyTimeout = flags.noBlock ? 0 : (flags.replyTimeout ?? 900)
@@ -407,16 +413,12 @@ export async function sendCommand(
     for (const issue of validation.errors) deps.io.err(`${issue.path}: ${issue.message}`)
     return EXIT.usage
   }
-  const hasReplyChoice = Array.isArray(flags.replyChoice)
-    ? flags.replyChoice.length > 0
-    : flags.replyChoice !== undefined
   if (
     !flags.reply &&
-    !hasReplyChoice &&
     (flags.title.trim().endsWith('?') || flags.body.trim().endsWith('?'))
   ) {
     deps.io.err(
-      'Heads up: this notification ends with a question but has no reply action. Add --reply or --reply-choice so it can be answered from the notification.',
+      'Heads up: this notification ends with a question but has no reply action. Add --reply (and optionally --reply-choice) so it can be answered from the notification.',
     )
   }
   const waitSeconds = flags.noWait ? 0 : config.wait_seconds.value
@@ -888,9 +890,10 @@ export interface AskFlags {
 }
 
 /**
- * Registers a question to be pushed if — and only if — the turn ends with the
- * user away. Returns immediately: the agent asks in prose as it always would,
- * and a user sitting at the terminal answers there with no notification sent.
+ * Registers a question for turn-end routing under the user's presence config.
+ * Returns immediately so the agent can ask in prose and end its turn. With the
+ * default presence gate, recent keyboard or mouse activity keeps it local;
+ * `require_idle = false` intentionally permits a push while the user is active.
  */
 export function askCommand(deps: CommandDeps, question: string, flags: AskFlags): number {
   // An agent calling this gets no hook payload and no harness exports its
@@ -946,27 +949,70 @@ export function askCommand(deps: CommandDeps, question: string, flags: AskFlags)
  *
  * Only a UserPromptSubmit hook firing produces the pointer this reads, and the
  * old message answered every cause with "run `notifai hooks install` and send
- * one prompt" — which, said to someone who had just run exactly that, was a
- * dead end (NotifAI-91f). The two causes need different actions, and we can
- * tell them apart: hooks on disk but no pointer means they were installed after
- * this session started, and a harness only reads them at session start.
+ * one prompt". The useful next action depends on the harness: some reload
+ * project hook files, OpenCode loads its plugin at startup, and Codex should be
+ * checked after a prompt before assuming that a new session is required.
  */
 function diagnoseMissingSession(deps: CommandDeps): string[] {
   const installations = findInstallations(deps.cwd, deps.env)
   if (installations.length === 0) {
     return [
       'Could not tell which harness session this is: no NotifAI hooks are installed for this project.',
-      'Run `notifai hooks install`, then restart the harness so it loads them.',
+      'Run `notifai hooks install`, then follow the activation instruction it prints.',
     ]
   }
   const where = installations.map((i) => `${i.harness} in ${i.file}`).join(', ')
   return [
     `Could not tell which harness session this is. NotifAI hooks are installed (${where}),`,
-    'but none has fired here yet. Harnesses read their hooks once at session start, so a',
-    'session that was already running when they were installed never loaded them.',
-    'Restart the harness and send one prompt, then this will work.',
+    'but no usable session pointer from the last 24 hours exists here.',
+    hookActivationAdvice(installations),
     'To ask from this session anyway, pass --session <id>.',
   ]
+}
+
+/** The least disruptive verified way to make each installed adapter run once. */
+function hookActivationAdvice(installations: Installation[]): string {
+  const harnesses = new Set(installations.map((installation) => installation.harness))
+  const advice: string[] = []
+  if (
+    installations.some(
+      (installation) => installation.harness === 'claude-code' && !installation.global,
+    )
+  ) {
+    advice.push('Claude Code: send one new prompt; project hook files reload without a restart')
+  }
+  if (
+    installations.some(
+      (installation) => installation.harness === 'claude-code' && installation.global,
+    )
+  ) {
+    advice.push('Claude Code global hooks: send one prompt; start a new session only if it does not fire')
+  }
+  if (
+    installations.some(
+      (installation) => installation.harness === 'cursor' && !installation.global,
+    )
+  ) {
+    advice.push(
+      'Cursor: send one prompt, then run `notifai doctor`; start a new session only if it still has not fired',
+    )
+  }
+  if (
+    installations.some(
+      (installation) => installation.harness === 'cursor' && installation.global,
+    )
+  ) {
+    advice.push('Cursor global hooks: send one prompt; start a new session only if it does not fire')
+  }
+  if (harnesses.has('codex')) {
+    advice.push(
+      'Codex: send one prompt, then run `notifai doctor`; start a new session only if it still has not fired',
+    )
+  }
+  if (harnesses.has('opencode')) {
+    advice.push('OpenCode: restart it, then send one prompt; plugins load at startup')
+  }
+  return `${advice.join('. ')}.`
 }
 
 /** Retire a question so a late answer is rejected rather than silently lost. */
@@ -1005,7 +1051,10 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
     return installOpencodePlugin(deps, file, {
       execPath,
       scriptPath,
-      timeoutSeconds: config.hook_reply_timeout_seconds.value + 60,
+      timeoutSeconds: blockingHookTimeoutSeconds(
+        config.ask_grace_seconds.value,
+        config.hook_reply_timeout_seconds.value,
+      ),
     })
   }
 
@@ -1036,7 +1085,14 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
     deps.io.out(`Installed ${harness} hooks in ${file}`)
     if (merged.replaced.length > 0) deps.io.out(`  replaced: ${merged.replaced.join(', ')}`)
     if (merged.added.length > 0) deps.io.out(`  added: ${merged.added.join(', ')}`)
-    deps.io.out('Cursor reloads hooks.json automatically. A phone answer is submitted as one')
+    if (flags.global) {
+      deps.io.out('Send one Cursor prompt, then check `notifai doctor`. If the hook has not fired,')
+      deps.io.out('start a new Cursor session and try one prompt again.')
+    } else {
+      deps.io.out('Send one Cursor prompt, then check `notifai doctor`. If the hook has not fired,')
+      deps.io.out('start a new Cursor session and try one prompt again.')
+    }
+    deps.io.out('A companion-device answer is submitted as one')
     deps.io.out('follow-up user message; loop_limit = 1 prevents repeated answer turns.')
     return EXIT.ok
   }
@@ -1074,23 +1130,22 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
   deps.io.out('')
   deps.io.out(
     config.require_idle.value
-      ? `While you are at the keyboard nothing is pushed. Once the machine has been idle for ` +
-          `${config.away_after_seconds.value}s, a question registered with \`notifai ask\` waits ` +
-          `${config.ask_grace_seconds.value}s in the terminal and then goes to your devices. ` +
+      ? `While keyboard or mouse idle time stays below ${config.away_after_seconds.value}s, ` +
+          `nothing is pushed. A question registered with \`notifai ask\` stays in the terminal ` +
+          `until its ${config.ask_grace_seconds.value}s grace window, counted from registration, ` +
+          `has elapsed; it goes to your devices only while the machine also meets the idle threshold. ` +
           `Set \`require_idle = false\` to be notified even while you are working.`
-      : `A question registered with \`notifai ask\` waits ${config.ask_grace_seconds.value}s in ` +
-          `the terminal and then goes to your devices whether or not you are at this machine ` +
+      : `A question registered with \`notifai ask\` stays in the terminal for ` +
+          `${config.ask_grace_seconds.value}s from registration and then goes to your devices ` +
+          `whether or not you are at this machine ` +
           `(\`require_idle = false\`).`,
   )
+  if (config.require_idle.value) {
+    deps.io.out(
+      'If this OS exposes no keyboard/mouse idle signal, the hook falls back to prompt silence and skips the blocking grace once it decides you are away.',
+    )
+  }
   if (harness === 'codex') {
-    // Verified 2026-08-02: Codex keys each handler by
-    // <file>:<event>:<group>:<handler> with a trusted_hash, and silently skips
-    // any it has no entry for. `codex exec` reported "UserPromptSubmit
-    // Completed" while never running the freshly written handler. Nothing
-    // downstream can detect this, so it has to be said here.
-    deps.io.out('Codex will not run these until you approve them: it trusts hooks by content')
-    deps.io.out('hash, and skips untrusted ones without reporting anything. Start Codex')
-    deps.io.out('interactively once and accept the prompt.')
     const layer = flags.global ? null : codexLayerDir(deps.cwd)
     if (layer !== null) {
       // Codex reads project hooks from the main repository but only looks when
@@ -1101,15 +1156,22 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
       mkdirSync(layer, { recursive: true })
       deps.io.out('')
       deps.io.out('You are in a worktree. Codex reads project hooks from the main repository,')
-      deps.io.out(`so they were written to ${file} — covering every worktree of`)
-      deps.io.out(`this repo — and ${layer} was created, without which Codex`)
-      deps.io.out('does not look for them at all.')
+      deps.io.out(`so they were written to ${file}. ${layer} was created so this`)
+      deps.io.out('worktree discovers that file. Each other worktree needs its own `.codex`')
+      deps.io.out('directory; rerun this installer from that worktree to create it.')
     }
-    deps.io.out('Check with `notifai doctor`, which reads the trust table directly.')
   }
   deps.io.out('')
-  deps.io.out('Restart the harness for the hooks to take effect: a harness reads its hooks')
-  deps.io.out('once at session start, so this session will not run them however long it lasts.')
+  if (harness === 'claude-code' && flags.global !== true) {
+    deps.io.out('Claude Code reloads project hook files without a restart. Send one new prompt,')
+    deps.io.out('then check `notifai doctor` to confirm that the hook fired.')
+  } else if (harness === 'claude-code') {
+    deps.io.out('Send one new Claude Code prompt, then check `notifai doctor`. If the hook has')
+    deps.io.out('not fired, start a new Claude Code session and try one prompt again.')
+  } else {
+    deps.io.out('Send one Codex prompt, then check `notifai doctor`. If the hook has not fired,')
+    deps.io.out('start a new Codex session and try one prompt again.')
+  }
   return EXIT.ok
 }
 
@@ -1139,9 +1201,11 @@ function installOpencodePlugin(
   }
   deps.io.out(`Installed the OpenCode plugin at ${file}`)
   deps.io.out('')
-  deps.io.out('It maps chat.message to presence, session.idle to the question escalation,')
-  deps.io.out('and permission.ask to a decision your phone can make. Every decision still')
-  deps.io.out('comes from the same `notifai hook` commands the other harnesses run.')
+  deps.io.out('It maps chat.message to presence, session.idle to question escalation, and')
+  deps.io.out('session.deleted to local cleanup through the same `notifai hook` commands')
+  deps.io.out('the other harnesses run. Permission prompts stay in OpenCode.')
+  deps.io.out('OpenCode cannot reliably resume an idle agent turn with a device answer; use')
+  deps.io.out('`notifai send --reply` when the answer must return to the agent.')
   deps.io.out('')
   deps.io.out('Restart OpenCode: it loads plugins once at start.')
   return EXIT.ok
@@ -1262,11 +1326,17 @@ export async function configSetCommand(
   }
   let value: unknown = rawValue
   if (NUMERIC_CONFIG_KEYS.includes(key as ConfigKey)) {
-    value = Number(rawValue)
-    if (!Number.isFinite(value)) {
-      deps.io.err(`"${rawValue}" is not a number.`)
+    const numeric = Number(rawValue)
+    if (!Number.isInteger(numeric)) {
+      deps.io.err(`"${rawValue}" is not an integer.`)
       return EXIT.usage
     }
+    const bounds = configBounds(key as ConfigKey)
+    if (bounds !== undefined && (numeric < bounds.min || numeric > bounds.max)) {
+      deps.io.err(`${key} must be between ${bounds.min} and ${bounds.max}.`)
+      return EXIT.usage
+    }
+    value = numeric
   }
   if (BOOLEAN_CONFIG_KEYS.includes(key as ConfigKey)) {
     if (rawValue !== 'true' && rawValue !== 'false') {
@@ -1289,7 +1359,7 @@ export async function configSetCommand(
     const selected = await deps.io.select('Where should this setting live?', [
       { value: 'global', label: 'This machine', hint: 'applies across projects' },
       { value: 'project', label: 'This project (shared)', hint: '.notifai/config.toml' },
-      { value: 'local', label: 'This project (local)', hint: 'gitignored' },
+      { value: 'local', label: 'This project (personal)', hint: 'keep config.local.toml gitignored' },
     ])
     if (selected === null) {
       deps.io.err('No configuration layer selected.')
@@ -1362,13 +1432,14 @@ export interface InitFlags {
 }
 
 /**
- * The one command that takes a project from nothing to working (D-064).
+ * The setup coordinator that observes each prerequisite and advances the ones
+ * this build can perform.
  *
  * Idempotent by construction: every step first observes, then acts only on the
  * gap, so re-running is how you check the setup as much as how you create it.
  * With a human at a terminal it walks them through the missing pieces; run by
  * an agent it never prompts — each optional step is answered by a flag, and
- * whatever only the user can do (signing in, pairing a phone) is printed as
+ * whatever only the user can do (signing in, pairing a companion device) is printed as
  * the exact command to hand back to them.
  */
 export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<number> {
@@ -1433,6 +1504,10 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
       deps.io.err('Skill installation failed — run it manually with:')
       deps.io.err(`  npx skills add ${SKILLS_SOURCE} --skill notifai`)
     }
+  } else if (SKILLS_SOURCE === '' && flags.skills === undefined) {
+    deps.io.out(
+      'Agent skill not installed (optional): this build has no published skill source configured.',
+    )
   } else if (flags.skills === undefined && !interactive) {
     deps.io.out('Agent skill not installed (optional) — add it with: notifai init --skills')
   }
@@ -1492,6 +1567,7 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
       }
     } catch {
       deps.io.out('Could not reach the server to check devices — `notifai doctor` when back online.')
+      remaining.push('verify device readiness: notifai doctor')
     }
   }
 
@@ -1613,13 +1689,13 @@ export async function doctorCommand(deps: CommandDeps, flags: { json?: boolean }
 }
 
 /**
- * Whether the hooks will actually run — answerable without a live test.
+ * Whether the hook installation is internally ready, plus evidence that a
+ * project session has fired it before. This cannot prove future execution or
+ * end-to-end notification delivery without a live harness and device test.
  *
  * Every failure mode here was found the expensive way, by spawning a session
- * and watching nothing happen: hooks not installed, installed but never loaded
- * because the harness was not restarted (NotifAI-91f), installed but silently
- * skipped by Codex for want of trust (NotifAI-gup), or left behind by an older
- * build that named events this one does not serve (NotifAI-inb).
+ * and watching nothing happen: hooks not installed, installed but never fired,
+ * or left behind by an older build that named events this one does not serve.
  */
 function hookChecks(deps: CommandDeps): { name: string; ok: boolean; detail: string }[] {
   const checks: { name: string; ok: boolean; detail: string }[] = []
@@ -1662,6 +1738,17 @@ function hookChecks(deps: CommandDeps): { name: string; ok: boolean; detail: str
         : `${stale.join('; ')} — rerun \`notifai hooks install\` to drop ${stale.length === 1 ? 'it' : 'them'}`,
   })
 
+  const adapterProblems = installations.flatMap((installation) =>
+    (installation.problems ?? []).map((problem) => `${installation.file}: ${problem}`),
+  )
+  if (adapterProblems.length > 0) {
+    checks.push({
+      name: 'hooks (adapter)',
+      ok: false,
+      detail: adapterProblems.join('; '),
+    })
+  }
+
   // Two checkouts each installing hooks means both fire for the same event, and
   // the user gets every question twice (NotifAI-0vk).
   //
@@ -1692,25 +1779,26 @@ function hookChecks(deps: CommandDeps): { name: string; ok: boolean; detail: str
   }
 
   const fired = readProjectSession(deps.cwd, deps.env, (deps.now ?? Date.now)()) !== null
-  const cursorOnly = installations.every((installation) => installation.harness === 'cursor')
   checks.push({
     name: 'hooks (fired)',
     ok: fired,
     detail: fired
       ? 'a session in this directory has run them'
-      : cursorOnly
-        ? 'installed but never run here — Cursor reloads hooks automatically; send one prompt'
-        : 'installed but never run here — restart the harness and send one prompt ' +
-          '(hooks are read once at session start)',
+      : `no session pointer from the last 24 hours — ${hookActivationAdvice(installations)}`,
   })
+
+  if (installations.some((installation) => installation.harness === 'opencode')) {
+    checks.push({
+      name: 'hooks (opencode continuation)',
+      ok: false,
+      detail:
+        'question routing is installed, but OpenCode cannot reliably resume an idle agent turn with the answer; use `notifai send --reply` for decisions',
+    })
+  }
 
   const stray = codexStrayWorktreeCheck(deps)
   if (stray !== null) checks.push(stray)
 
-  const codex = installations.filter((i) => i.harness === 'codex')
-  if (codex.length > 0) {
-    checks.push(codexTrustCheck(deps, codex))
-  }
   return checks
 }
 
@@ -1744,44 +1832,6 @@ function codexStrayWorktreeCheck(
       problems.length === 0
         ? `worktree wired to the main repository at ${root}`
         : `${problems.join('; ')}. Re-run \`notifai hooks install\` to fix.`,
-  }
-}
-
-/**
- * Codex trusts each handler by content hash and skips untrusted ones without
- * reporting anything, so "installed" and "will run" are different questions.
- * The trust table lives in `config.toml` under keys of the form
- * `<file>:<snake_case event>:<group>:<handler>` — verified against a real
- * config on 2026-08-02.
- */
-function codexTrustCheck(
-  deps: CommandDeps,
-  installations: Installation[],
-): { name: string; ok: boolean; detail: string } {
-  const file = codexConfigPath(deps.env)
-  let state: Record<string, unknown> = {}
-  try {
-    const parsed = parseToml(readFileSync(file, 'utf8')) as Record<string, unknown>
-    const hooks = parsed['hooks'] as Record<string, unknown> | undefined
-    state = (hooks?.['state'] as Record<string, unknown> | undefined) ?? {}
-  } catch {
-    return {
-      name: 'hooks (codex trust)',
-      ok: false,
-      detail: `could not read ${file}; start Codex interactively once and accept the hook prompt`,
-    }
-  }
-  const untrusted = installations.flatMap((i) =>
-    i.handlers.filter((h) => state[codexTrustKey(i.file, h)] === undefined).map((h) => h.event),
-  )
-  return {
-    name: 'hooks (codex trust)',
-    ok: untrusted.length === 0,
-    detail:
-      untrusted.length === 0
-        ? 'every handler has a trust entry (entry present; the hash itself is Codex’s to check)'
-        : `no trust entry for ${untrusted.join(', ')} — Codex will skip ${untrusted.length === 1 ? 'it' : 'them'} ` +
-          'silently. Start Codex interactively once and accept the prompt.',
   }
 }
 

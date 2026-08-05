@@ -1,9 +1,9 @@
 # NotifAI
 
-`notifai` lets software agents and local programs send native phone
-notifications to their user — completion notices, questions with answer
-buttons, and status updates that land on a lock screen instead of an
-unwatched terminal.
+`notifai` lets software agents and local programs send native device
+notifications to their user — completion notices, answerable questions, and
+status updates that land on a lock screen or desktop instead of an unwatched
+terminal.
 
 This repository is the public home of:
 
@@ -48,7 +48,7 @@ The CLI binary builds to `apps/cli/dist/main.js`.
 ## The agent skill
 
 The NotifAI agent guidance skill lives in `skills/notifai/` and is never
-installed by default. `notifai init` only writes project configuration;
-`notifai init --skills` is an explicit opt-in, and it fails cleanly in
-this build because the installable skill source is not configured until
-the first tagged release exists to pin it to.
+installed by default. `notifai init` coordinates project configuration,
+sign-in, optional harness hooks, and device readiness. `notifai init --skills`
+fails cleanly in this build because the installable skill source is not
+configured until the first tagged release exists to pin it to.

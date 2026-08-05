@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import type {
@@ -255,7 +255,7 @@ describe('command contracts', () => {
 
     expect(await sendCommand(makeDeps(io, client), flags)).toBe(EXIT.ok)
     expect(io.errLines).toEqual([
-      'Heads up: this notification ends with a question but has no reply action. Add --reply or --reply-choice so it can be answered from the notification.',
+      'Heads up: this notification ends with a question but has no reply action. Add --reply (and optionally --reply-choice) so it can be answered from the notification.',
     ])
   })
 
@@ -274,9 +274,15 @@ describe('command contracts', () => {
     expect(io.errLines).toEqual([])
   })
 
-  it('suppresses the question warning when --reply-choice is present', async () => {
+  it('rejects --reply-choice without the --reply action it configures', async () => {
     const io = new CapturedIo()
-    const client = { submit: async () => receipt } as unknown as ApiClient
+    let submitCalls = 0
+    const client = {
+      submit: async () => {
+        submitCalls += 1
+        return receipt
+      },
+    } as unknown as ApiClient
 
     expect(
       await sendCommand(makeDeps(io, client), {
@@ -284,8 +290,11 @@ describe('command contracts', () => {
         body: 'Choose when ready.',
         replyChoice: ['Now', 'Later'],
       }),
-    ).toBe(EXIT.ok)
-    expect(io.errLines).toEqual([])
+    ).toBe(EXIT.usage)
+    expect(submitCalls).toBe(0)
+    expect(io.errLines).toEqual([
+      'Use --reply with --reply-timeout, --reply-window, --reply-choice, or --no-block.',
+    ])
   })
 
   it('keeps a warned JSON send successful and stdout machine-pure', async () => {
@@ -501,9 +510,7 @@ describe('Cursor hook commands', () => {
     expect(io.outLines).toContain(
       `ok    hooks: cursor project (${path.join(cwd, '.cursor', 'hooks.json')})`,
     )
-    expect(io.outLines.some((line) => line.includes('Cursor reloads hooks automatically'))).toBe(
-      true,
-    )
+    expect(io.outLines.some((line) => line.includes('Cursor: send one prompt'))).toBe(true)
   })
 
   it('uninstalls only NotifAI Cursor hooks and preserves foreign hooks', () => {
@@ -532,6 +539,71 @@ describe('Cursor hook commands', () => {
     expect(remaining.version).toBe(1)
     expect(remaining.hooks['stop']).toEqual([{ command: './keep-my-cursor-hook.sh' }])
     expect(JSON.stringify(remaining)).not.toContain('--owner notifai')
+  })
+})
+
+describe('harness activation guidance', () => {
+  const execPath = '/usr/local/bin/node'
+  const scriptPath = '/opt/notifai/dist/main.js'
+
+  it('does not require a Claude Code restart for project hook files', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-claude-activation-'))
+    const io = new CapturedIo()
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd }
+
+    expect(
+      hooksInstallCommand(deps, { harness: 'claude-code', execPath, scriptPath }),
+    ).toBe(EXIT.ok)
+
+    expect(io.outLines.join('\n')).toContain(
+      'Claude Code reloads project hook files without a restart.',
+    )
+  })
+
+  it('does not invent a Codex hook trust gate', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-activation-'))
+    const io = new CapturedIo()
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd }
+
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(
+      EXIT.ok,
+    )
+
+    const output = io.outLines.join('\n')
+    expect(output).toContain('Send one Codex prompt, then check `notifai doctor`.')
+    expect(output).not.toMatch(/trust|approve/i)
+  })
+
+  it('keeps OpenCode permission prompts local and reports its continuation limit', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-opencode-activation-'))
+    const io = new CapturedIo()
+    const client = {
+      health: async () => true,
+      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+      listDevices: async () => ({ devices: [] }),
+    } as unknown as ApiClient
+    const deps = { ...makeDeps(io, client), cwd }
+
+    expect(hooksInstallCommand(deps, { harness: 'opencode', execPath, scriptPath })).toBe(
+      EXIT.ok,
+    )
+
+    expect(io.outLines.join('\n')).toContain('Permission prompts stay in OpenCode.')
+    expect(io.outLines.join('\n')).toContain('cannot reliably resume an idle agent turn')
+    const pluginFile = path.join(cwd, '.opencode', 'plugins', 'notifai.js')
+    const plugin = readFileSync(pluginFile, 'utf8')
+    expect(plugin).toContain('const TIMEOUT_MS = 540000')
+
+    io.outLines = []
+    expect(await doctorCommand(deps, {})).toBe(EXIT.failed)
+    expect(io.outLines.join('\n')).toContain('hooks (opencode continuation)')
+    expect(io.outLines.join('\n')).not.toContain('hooks (adapter)')
+
+    writeFileSync(pluginFile, plugin.replace(/^const ADAPTER_VERSION = .*\n/m, ''))
+    io.outLines = []
+    expect(await doctorCommand(deps, {})).toBe(EXIT.failed)
+    expect(io.outLines.join('\n')).toContain('hooks (adapter)')
+    expect(io.outLines.join('\n')).toContain('obsolete OpenCode event wiring')
   })
 })
 
@@ -659,6 +731,29 @@ describe('interactive command UX', () => {
     )
   })
 
+  it('rejects numeric config values that resolution would otherwise silently clamp', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-config-bounds-'))
+    const io = new CapturedIo()
+    const configFile = path.join(cwd, 'xdg', 'notifai', 'config.toml')
+    const deps = {
+      ...makeDeps(io, {} as ApiClient),
+      cwd,
+      env: { XDG_CONFIG_HOME: path.join(cwd, 'xdg') },
+    }
+
+    expect(await configSetCommand(deps, 'ask_grace_seconds', '600', { yes: true })).toBe(
+      EXIT.usage,
+    )
+    expect(await configSetCommand(deps, 'ask_grace_seconds', '1.5', { yes: true })).toBe(
+      EXIT.usage,
+    )
+    expect(io.errLines).toEqual([
+      'ask_grace_seconds must be between 0 and 540.',
+      '"1.5" is not an integer.',
+    ])
+    expect(existsSync(configFile)).toBe(false)
+  })
+
   it('renders doctor checks through the styled seam for humans', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-doctor-style-'))
     const io = new InteractiveIo()
@@ -724,6 +819,8 @@ describe('init', () => {
     // Safe by default: without an explicit --skills opt-in, init only writes
     // configuration and never spawns the skill installer.
     expect(io.outLines.join('\n')).toContain('Agent skill not installed (optional)')
+    expect(io.outLines.join('\n')).toContain('verify device readiness: notifai doctor')
+    expect(io.outLines.join('\n')).not.toContain('All set.')
 
     io.outLines = []
     expect(await initCommand(deps, { skills: false })).toBe(EXIT.ok)
@@ -749,9 +846,21 @@ describe('init', () => {
 
     expect(await initCommand(deps, {})).toBe(EXIT.ok)
     const out = io.outLines.join('\n')
-    expect(out).toContain('notifai init --skills')
+    expect(out).toContain('no published skill source configured')
+    expect(out).not.toContain('notifai init --skills')
     expect(out).toContain('notifai hooks install')
     expect(out).not.toContain('Installing the notifai agent skill')
+  })
+
+  it('fails explicitly when --skills requests the unpublished source', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-skills-unpublished-'))
+    const io = new CapturedIo()
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd }
+
+    expect(await initCommand(deps, { skills: true })).toBe(EXIT.failed)
+    expect(io.errLines).toContain(
+      'The optional agent skill is not published yet; this build has no skill source configured.',
+    )
   })
 
   it('tells the user what only they can do when nothing is signed in', async () => {
@@ -869,11 +978,7 @@ describe('an outage is not an answer (NotifAI-mw6)', () => {
 })
 
 describe('asking before the hooks have ever run (NotifAI-91f)', () => {
-  it('names the restart instead of repeating the install step', () => {
-    // The live failure: a spawned Codex session ran `hooks install`, then got
-    // "Run `notifai hooks install` and send one prompt first" — told to do the
-    // thing it had just done. Hooks are read at session start, so the install
-    // could not have taken effect, and only the restart is actionable.
+  it('tells Claude Code to send a prompt without falsely requiring a restart', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-firstrun-'))
     mkdirSync(path.join(cwd, '.claude'), { recursive: true })
     applyPlan(path.join(cwd, '.claude', 'settings.local.json'), {
@@ -890,7 +995,7 @@ describe('asking before the hooks have ever run (NotifAI-91f)', () => {
 
     expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
     const said = io.errLines.join(' ')
-    expect(said).toMatch(/restart/i)
+    expect(said).toMatch(/project hook files reload without a restart/i)
     expect(said).not.toMatch(/Run `notifai hooks install` and send one prompt/)
   })
 

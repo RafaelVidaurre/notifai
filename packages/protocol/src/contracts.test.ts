@@ -221,7 +221,7 @@ describe('validateDraft', () => {
     expect(CAPABILITIES_V1.describe('macos')).toBe(MACOS_CAPABILITIES_V1)
     expect(MACOS_CAPABILITIES_V1.fields).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ path: 'presentation.image', status: 'supported' }),
+        expect.objectContaining({ path: 'presentation.image', status: 'downgraded' }),
         expect.objectContaining({ path: 'reply', status: 'supported' }),
         expect.objectContaining({ path: 'platform.macos.sound', status: 'supported' }),
         expect.objectContaining({ path: 'platform.macos.thread_id', status: 'supported' }),
@@ -229,6 +229,48 @@ describe('validateDraft', () => {
         expect.objectContaining({ path: 'sound_file', status: 'unsupported' }),
       ]),
     )
+  })
+
+  it('warns when macOS delivery omits a requested image', () => {
+    const withImage = draft({
+      presentation: { title: 'Hi', body: 'Body', image: { media_id: 'med_example' } },
+    })
+
+    expect(validateDraft(withImage, MACOS_CAPABILITIES_V1)).toMatchObject({
+      ok: true,
+      errors: [],
+      warnings: [
+        {
+          path: 'presentation.image',
+          message: expect.stringContaining('omitted on macOS'),
+        },
+      ],
+    })
+    expect(validateDraft(withImage, IOS_CAPABILITIES_V1).warnings).toEqual([])
+  })
+
+  it('warns when a target requests Time Sensitive behavior without the capability', () => {
+    const timeSensitive = draft({
+      platform: { ios: { interruption_level: 'time_sensitive' } },
+    })
+    const macTimeSensitive = draft({
+      platform: { macos: { interruption_level: 'time_sensitive' } },
+    })
+    const active = draft({ platform: { ios: { interruption_level: 'active' } } })
+
+    expect(validateDraft(timeSensitive, IOS_CAPABILITIES_V1)).toMatchObject({
+      ok: true,
+      warnings: [
+        {
+          path: 'platform.ios.interruption_level',
+          message: expect.stringContaining('Time Sensitive breakthrough is unavailable'),
+        },
+      ],
+    })
+    expect(validateDraft(macTimeSensitive, MACOS_CAPABILITIES_V1).warnings).toEqual([
+      expect.objectContaining({ path: 'platform.macos.interruption_level' }),
+    ])
+    expect(validateDraft(active, IOS_CAPABILITIES_V1).warnings).toEqual([])
   })
 
   it('uses the same APNs envelope rules for estimation and rendering', () => {

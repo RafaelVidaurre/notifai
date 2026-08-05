@@ -53,8 +53,7 @@ function fakeClient(recorder: Recorder, replies: ReplyView[]): ApiClient {
   return {
     beginPairing: notUsed,
     pollPairing: notUsed,
-    // One answerable iPhone plus a Mac that cannot register the reply
-    // categories — the shape that broke the first real device trial.
+    // Both current companion apps register reply categories.
     listDevices: async () => ({
       devices: [
         {
@@ -221,6 +220,10 @@ describe('presence gate', () => {
     registerQuestion('spawn1', h.env, { question: 'Ship it?' }, NOW)
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'spawn1' }))
     expect(h.recorder.submitted.length).toBeGreaterThan(0)
+    expect(h.recorder.submitted[0]?.draft.targets).toEqual({
+      mode: 'selected',
+      device_ids: ['dev_iphone', 'dev_mac'],
+    })
   })
 
   it('falls back to elapsed time where no idle source exists', () => {

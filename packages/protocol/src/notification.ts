@@ -166,7 +166,7 @@ export const IosOptions = Type.Object(
     sound: Type.Optional(Type.Union([...IOS_SOUNDS.map((sound) => Type.Literal(sound)), Type.Null()])),
     badge: Type.Optional(Type.Union([Type.Integer({ minimum: 0 }), Type.Null()])),
     thread_id: Type.Optional(Type.Union([Type.String({ minLength: 1, maxLength: 64 }), Type.Null()])),
-    /** Action categories are deferred with notification-interaction design (D-028). */
+    /** Caller-selected categories are unsupported; companions own their fixed reply categories. */
     category: Type.Optional(Type.Null()),
     interruption_level: Type.Optional(
       Type.Union(INTERRUPTION_LEVELS.map((l) => Type.Literal(l))),
@@ -195,7 +195,7 @@ export const MacosOptions = Type.Object(
     sound: Type.Optional(Type.Union([...MACOS_SOUNDS.map((sound) => Type.Literal(sound)), Type.Null()])),
     badge: Type.Optional(Type.Union([Type.Integer({ minimum: 0 }), Type.Null()])),
     thread_id: Type.Optional(Type.Union([Type.String({ minLength: 1, maxLength: 64 }), Type.Null()])),
-    /** Notification actions are deferred with notification-interaction design (D-028). */
+    /** Caller-selected categories are unsupported; companions own their fixed reply categories. */
     category: Type.Optional(Type.Null()),
     interruption_level: Type.Optional(
       Type.Union(INTERRUPTION_LEVELS.map((level) => Type.Literal(level))),

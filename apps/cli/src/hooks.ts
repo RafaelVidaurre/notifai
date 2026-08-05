@@ -140,7 +140,7 @@ export type GraceOutcome =
 
 /**
  * The terminal-first wait from U-061: the question sits in the terminal for
- * `ask_grace_seconds` from when it was sent, and only then reaches the phone.
+ * `ask_grace_seconds` from when it was sent, and only then reaches companion devices.
  *
  * Holding a blocking Stop hook open is normally hostile — while it blocks, the
  * harness cannot show its prompt either, so a user wanting to answer locally is
@@ -402,7 +402,7 @@ export function readProjectSession(
  * source. There, never having seen a prompt is not evidence of absence — it is
  * a missing `UserPromptSubmit` hook — so it resolves to "present".
  *
- * Answering from the phone does not make the user present; only touching this
+ * Answering from a companion device does not make the user present; only touching this
  * machine does. Answering on a device is evidence of being away from it.
  *
  * All of which only matters if presence is being consulted at all. With
@@ -487,9 +487,8 @@ async function askAndWait(
 ): Promise<AskResult | { error: string }> {
   const collapseKey = `notifai-hook-${randomBytes(8).toString('base64url')}`
   const timeoutSeconds = ctx.config.hook_reply_timeout_seconds.value
-  // Only iOS registers the reply categories, and a draft carrying `reply` is
-  // rejected outright if it targets any device that cannot answer. Targeting
-  // "all" would therefore fail the moment the user pairs a Mac.
+  // A draft carrying `reply` is rejected outright if it targets a device that
+  // cannot answer, so resolve the healthy companion platforms explicitly.
   const answerable = await answerableDevices(ctx)
   if (answerable.length === 0) {
     return { error: 'no device can answer a question yet; leaving this to the terminal' }
@@ -534,27 +533,30 @@ async function askAndWait(
 }
 
 /**
- * Devices that can actually answer. Restricted to healthy iOS installations
- * because the reply categories are registered by the iOS Companion App only;
- * the macOS inline reply is tracked separately (NotifAI-5pq).
+ * Healthy companion devices that implement replies. Both the iOS app and the
+ * macOS app register reply categories and submit answers directly.
  */
 async function answerableDevices(ctx: HookContext): Promise<string[]> {
   const configured = ctx.config.devices.value
   const { devices } = await ctx.client.listDevices()
   return devices
-    .filter((device) => device.platform === 'ios' && device.registration_healthy)
+    .filter(
+      (device) =>
+        (device.platform === 'ios' || device.platform === 'macos') &&
+        device.registration_healthy,
+    )
     .filter((device) => configured === null || configured.includes(device.device_id))
     .map((device) => device.device_id)
 }
 
 /**
- * The session id this push is attributed to — the same one `send` badges with.
+ * The session id this push is attributed to — the same one `send` carries.
  *
  * The hook has always known `session_id` and never passed it on, so two agents
  * in separate worktrees produced identical notifications and the user could
  * answer the wrong one's question (NotifAI-zbv). An exported `NOTIFAI_SESSION`
  * still wins, for coherence rather than vanity: it is THE session id wherever
- * it is set (D-066), so a session that exported one before launching must badge
+ * it is set, so a session that exported one before launching must carry
  * the same on its own sends and on the questions its hooks push. A name the
  * user chose also outlives harness restarts, which a per-launch UUID cannot.
  */
@@ -793,7 +795,7 @@ export async function drainOrphanRetirements(
 // ---------------------------------------------------------------------------
 
 /**
- * Records presence and retires anything still asking on the phone. This is the
+ * Records presence and retires anything still asking on companion devices. This is the
  * "answered in the terminal" case from the original design: we cannot tell
  * whether the new prompt answers the question, but we do not need to — the
  * user being here is what makes the notification noise.

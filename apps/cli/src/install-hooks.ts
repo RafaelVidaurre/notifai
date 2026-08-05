@@ -15,7 +15,6 @@ import os from 'node:os'
 import path from 'node:path'
 import { opencodePluginPath, opencodePluginTarget } from './opencode-plugin.js'
 
-/** What the generated plugin wires up; reported by `notifai doctor`. */
 /**
  * The three joints the OpenCode plugin hooks into, as (harness event, the
  * `notifai hook` event it runs). The plugin is a module and has no settings
@@ -111,23 +110,28 @@ function quote(value: string): string {
 export interface BuildOptions {
   execPath: string
   scriptPath: string
-  /** Seconds a blocking hook may wait for a phone answer. */
+  /** Seconds a blocking hook may wait for a companion-device answer. */
   replyTimeoutSeconds: number
   /** Seconds the question waits in the terminal before it is pushed at all. */
   graceSeconds: number
 }
 
-/** Both harnesses kill a command hook at 600s; stay clear of it. */
+/** Command-hook harnesses kill at 600s; generated adapters use the same safe ceiling. */
 const HOOK_CEILING_SECONDS = 590
+
+/** Grace, reply wait, and teardown headroom for any blocking turn-end adapter. */
+export function blockingHookTimeoutSeconds(graceSeconds: number, replyTimeoutSeconds: number): number {
+  return Math.min(HOOK_CEILING_SECONDS, graceSeconds + replyTimeoutSeconds + 60)
+}
 
 export function buildHookConfig(options: BuildOptions): HookConfig {
   const { execPath, scriptPath } = options
   // Stop can spend the grace window AND then the reply wait, so the declared
   // timeout must cover both. Headroom on top so the harness never kills the
   // hook first; a killed hook loses the answer the user already gave.
-  const blockingTimeout = Math.min(
-    HOOK_CEILING_SECONDS,
-    options.graceSeconds + options.replyTimeoutSeconds + 60,
+  const blockingTimeout = blockingHookTimeoutSeconds(
+    options.graceSeconds,
+    options.replyTimeoutSeconds,
   )
   return {
     UserPromptSubmit: [
@@ -186,9 +190,9 @@ interface CursorSettingsDocument {
 
 /** Cursor's native schema is flat and uses lower-camel lifecycle event names. */
 export function buildCursorHookConfig(options: BuildOptions): CursorHookConfig {
-  const blockingTimeout = Math.min(
-    HOOK_CEILING_SECONDS,
-    options.graceSeconds + options.replyTimeoutSeconds + 60,
+  const blockingTimeout = blockingHookTimeoutSeconds(
+    options.graceSeconds,
+    options.replyTimeoutSeconds,
   )
   return {
     beforeSubmitPrompt: [
@@ -201,7 +205,7 @@ export function buildCursorHookConfig(options: BuildOptions): CursorHookConfig {
       {
         command: hookCommand(options.execPath, options.scriptPath, 'stop', 'cursor'),
         timeout: blockingTimeout,
-        // One phone answer produces one automatic follow-up turn. There is no
+        // One companion-device answer produces one automatic follow-up turn. There is no
         // useful reason for Cursor to repeat it, even if state cleanup fails.
         loop_limit: 1,
       },
@@ -597,6 +601,8 @@ export interface Installation {
   file: string
   global: boolean
   handlers: InstalledHandler[]
+  /** Structural defects that require reinstalling this generated adapter. */
+  problems?: string[]
 }
 
 /**
@@ -631,6 +637,9 @@ export function findInstallations(cwd: string, env: NodeJS.ProcessEnv = process.
           harness,
           file,
           global,
+          ...(!target.current
+            ? { problems: ['obsolete OpenCode event wiring; rerun `notifai hooks install --harness opencode`'] }
+            : {}),
           // Reported as the command line the plugin will actually run, not as
           // the plugin's own path: every check downstream asks which build a
           // handler invokes, and for a module that answer lives inside it.
@@ -696,19 +705,4 @@ function locateHandlers(document: SettingsDocument): InstalledHandler[] {
 /** The hook event a handler's command actually invokes, e.g. `stop`. */
 export function handlerEvent(command: string): string | null {
   return / hook ([a-z-]+)/.exec(command)?.[1] ?? null
-}
-
-/**
- * The key Codex records trust under, verified against a real `config.toml` on
- * 2026-08-02: `<settings file>:<snake_case event>:<group>:<handler>`. The file
- * spells events in PascalCase and Codex normalises them here.
- */
-export function codexTrustKey(file: string, handler: InstalledHandler): string {
-  const event = handler.event.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase()
-  return `${file}:${event}:${handler.groupIndex}:${handler.handlerIndex}`
-}
-
-/** Where Codex keeps the trust table. Honours a relocated CODEX_HOME. */
-export function codexConfigPath(env: NodeJS.ProcessEnv = process.env): string {
-  return path.join(configHome(env, 'CODEX_HOME', '.codex'), 'config.toml')
 }

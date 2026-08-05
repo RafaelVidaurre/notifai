@@ -25,7 +25,6 @@ import {
   buildHookConfig,
   codexLayerDir,
   codexProjectRoot,
-  codexTrustKey,
   findInstallations,
   handlerEvent,
   hookCommand,
@@ -388,18 +387,6 @@ describe('finding what is installed', () => {
     expect(handlerEvent('unrelated --tool')).toBeNull()
   })
 
-  it('builds the trust key Codex records, snake-casing the event', () => {
-    // Verified against a real ~/.codex/config.toml on 2026-08-02: the file
-    // spells events in PascalCase and Codex normalises them in this table.
-    expect(
-      codexTrustKey('/repo/.codex/hooks.json', {
-        event: 'UserPromptSubmit',
-        groupIndex: 0,
-        handlerIndex: 1,
-        command: 'x',
-      }),
-    ).toBe('/repo/.codex/hooks.json:user_prompt_submit:0:1')
-  })
 })
 
 /**
@@ -466,25 +453,20 @@ describe('the OpenCode adapter (NotifAI-du1)', () => {
     expect(source).toContain(JSON.stringify(EXEC))
   })
 
-  it('wires all three joints plus the permission decision', () => {
+  it('wires the three question lifecycle joints and leaves permissions alone', () => {
     expect(source).toContain('"chat.message"')
-    expect(source).toContain('"session.idle"')
-    expect(source).toContain('"permission.ask"')
-    expect(source).toContain('"session.deleted"')
+    expect(source).toContain('event: async ({ event })')
+    expect(source).toContain('event?.type === "session.idle"')
+    expect(source).toContain('event?.properties?.sessionID')
+    expect(source).toContain('event?.type === "session.deleted"')
+    expect(source).toContain('event?.properties?.info?.id')
+    expect(source).not.toContain('"permission.ask"')
   })
 
   it('carries the ownership marker so a second checkout replaces it', () => {
     expect(source).toContain(OPENCODE_PLUGIN_MARKER)
     expect(isOurOpencodePlugin(source)).toBe(true)
     expect(isOurOpencodePlugin('export const SomeoneElse = () => ({})')).toBe(false)
-  })
-
-  it('only ever writes an explicit decision', () => {
-    // Any error, timeout or unparseable answer must leave output.status alone.
-    // A notification adapter must never be the reason a permission is granted.
-    expect(source).toContain('if (answer === null) return')
-    expect(source).toContain('output.status = "allow"')
-    expect(source).toContain('output.status = "deny"')
   })
 
   it('installs beside the config rather than into it', () => {
@@ -504,7 +486,12 @@ describe('the OpenCode adapter (NotifAI-du1)', () => {
     // rather than a command line, so answering with the plugin's own path made
     // an ordinary OpenCode install look like a second checkout and turned the
     // duplicate check red on a healthy machine.
-    expect(opencodePluginTarget(source)).toEqual({ exec: EXEC, script: SCRIPT })
+    expect(opencodePluginTarget(source)).toEqual({ exec: EXEC, script: SCRIPT, current: true })
+    expect(opencodePluginTarget(source.replace(/^const ADAPTER_VERSION = .*\n/m, ''))).toEqual({
+      exec: EXEC,
+      script: SCRIPT,
+      current: false,
+    })
     expect(opencodePluginTarget('export const SomeoneElse = () => ({})')).toBeNull()
     // Ours, but with the constants edited beyond recognition: no answer beats
     // a wrong one, since the caller compares these for equality.
