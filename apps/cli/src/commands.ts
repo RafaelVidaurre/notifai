@@ -1453,7 +1453,29 @@ export async function configSetCommand(
  * 1.5.x, `owner/repo@name` selects a skill; a Git ref belongs after `#`.
  * Keep this immutable and public because the command is printed to users.
  */
-export const SKILLS_SOURCE = 'RafaelVidaurre/notifai#v0.1.5'
+export const SKILLS_SOURCE = 'RafaelVidaurre/notifai#v0.1.6'
+
+function pinnedSkillInstalled(cwd: string): boolean {
+  const match = /^([^#]+)#(.+)$/.exec(SKILLS_SOURCE)
+  if (!match) return false
+  const lockPath = path.join(cwd, 'skills-lock.json')
+  const installedPath = path.join(cwd, '.agents', 'skills', 'notifai', 'SKILL.md')
+  if (!existsSync(lockPath) || !existsSync(installedPath)) return false
+  try {
+    const parsed = JSON.parse(readFileSync(lockPath, 'utf8')) as {
+      skills?: Record<string, { source?: unknown; ref?: unknown; skillPath?: unknown }>
+    }
+    const skill = parsed.skills?.notifai
+    if (!skill) return false
+    return (
+      skill.source === match[1] &&
+      skill.ref === match[2] &&
+      skill.skillPath === 'skills/notifai/SKILL.md'
+    )
+  } catch {
+    return false
+  }
+}
 
 /** Derive a contract-valid project slug from a directory name. */
 export function projectSlugFrom(name: string): string {
@@ -2270,17 +2292,26 @@ export async function assessReadiness(deps: CommandDeps): Promise<Readiness> {
 
   states.push(...hookStates(deps))
 
-  states.push({
-    id: 'skill',
-    title: 'Agent guidance skill',
-    status: 'optional-gap',
-    detail: `not installed from ${SKILLS_SOURCE} in this project`,
-    remedy: {
-      by: 'cli',
-      summary: 'install the skill agents follow when deciding to notify',
-      command: 'notifai init --skills',
-    },
-  })
+  states.push(
+    pinnedSkillInstalled(deps.cwd)
+      ? {
+          id: 'skill',
+          title: 'Agent guidance skill',
+          status: 'ready',
+          detail: `installed from ${SKILLS_SOURCE} in this project`,
+        }
+      : {
+          id: 'skill',
+          title: 'Agent guidance skill',
+          status: 'optional-gap',
+          detail: `not installed from ${SKILLS_SOURCE} in this project`,
+          remedy: {
+            by: 'cli',
+            summary: 'install the skill agents follow when deciding to notify',
+            command: 'notifai init --skills',
+          },
+        },
+  )
 
   states.push(await setupProofState(deps, config, accountClient, accountDevices))
 

@@ -308,9 +308,9 @@ one real verification notification. Setup becomes ready only after the CLI
 observes that notification's Companion Receipt; Provider Acceptance alone is
 not enough. The request id is saved in machine-local state, so a partial run
 rechecks the same notification instead of sending another one.
-`--skills` installs this skill from the immutable public `v0.1.5` tag. The
+`--skills` installs this skill from the immutable public `v0.1.6` tag. The
 source uses the skills installer's ref syntax
-`RafaelVidaurre/notifai#v0.1.5`; `owner/repo@name` means a skill selector, not
+`RafaelVidaurre/notifai#v0.1.6`; `owner/repo@name` means a skill selector, not
 a Git ref.
 
 It behaves differently depending on who runs it, on purpose:

@@ -13,6 +13,7 @@ import { describe, expect, it } from 'vitest'
 import { ApiCallError, NetworkError, type ApiClient } from './client.js'
 import {
   askCommand,
+  assessReadiness,
   capabilitiesCommand,
   configSetCommand,
   contradictingAnswer,
@@ -1063,8 +1064,43 @@ describe('init', () => {
   })
 
   it('pins the skill installer to the tagged public release syntax', () => {
-    expect(SKILLS_SOURCE).toBe('RafaelVidaurre/notifai#v0.1.5')
+    expect(SKILLS_SOURCE).toBe('RafaelVidaurre/notifai#v0.1.6')
     expect(SKILLS_SOURCE).not.toContain('@v')
+  })
+
+  it('recognizes a skill installed from the exact immutable release', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-pinned-skill-'))
+    mkdirSync(path.join(cwd, '.agents', 'skills', 'notifai'), { recursive: true })
+    writeFileSync(path.join(cwd, '.agents', 'skills', 'notifai', 'SKILL.md'), '# notifai\n')
+    writeFileSync(
+      path.join(cwd, 'skills-lock.json'),
+      `${JSON.stringify(
+        {
+          version: 1,
+          skills: {
+            notifai: {
+              source: 'RafaelVidaurre/notifai',
+              ref: 'v0.1.6',
+              sourceType: 'github',
+              skillPath: 'skills/notifai/SKILL.md',
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    )
+    const io = new CapturedIo()
+    const client = {
+      health: async () => true,
+      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+      listDevices: async () => ({ devices: [] }),
+    } as unknown as ApiClient
+    const readiness = await assessReadiness({ ...makeDeps(io, client), cwd })
+    expect(readiness.states.find((state) => state.id === 'skill')).toMatchObject({
+      status: 'ready',
+      detail: `installed from ${SKILLS_SOURCE} in this project`,
+    })
   })
 
   it('tells the user what only they can do when nothing is signed in', async () => {
