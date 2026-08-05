@@ -81,6 +81,20 @@ for (const entry of packages) {
 const cli = packages[0].manifest
 const cliSource = readFileSync(path.join(root, 'apps/cli/src/main.ts'), 'utf8')
 requireValue(!/\.version\(\s*['"]\d/.test(cliSource), 'CLI version must not be hardcoded in src/main.ts')
+
+const cliCommandsSource = readFileSync(path.join(root, 'apps/cli/src/commands.ts'), 'utf8')
+const cliCommandsDist = readFileSync(path.join(root, 'apps/cli/dist/commands.js'), 'utf8')
+const extractSkillsSource = (contents) => contents.match(/SKILLS_SOURCE\s*=\s*['"]([^'"]+)['"]/)?.[1]
+const sourceSkillsSource = extractSkillsSource(cliCommandsSource)
+const distSkillsSource = extractSkillsSource(cliCommandsDist)
+const expectedSkillsSource = `RafaelVidaurre/notifai#v${cli.version}`
+requireValue(sourceSkillsSource === expectedSkillsSource, `CLI source SKILLS_SOURCE must be ${expectedSkillsSource}`)
+requireValue(distSkillsSource === expectedSkillsSource, `CLI dist SKILLS_SOURCE must be ${expectedSkillsSource}`)
+requireValue(
+  sourceSkillsSource === distSkillsSource,
+  `CLI source/dist SKILLS_SOURCE mismatch (${sourceSkillsSource || '<missing>'} vs ${distSkillsSource || '<missing>'})`,
+)
+
 try {
   const reported = execFileSync('node', ['apps/cli/dist/main.js', '--version'], {
     cwd: root,

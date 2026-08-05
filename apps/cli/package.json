@@ -1,6 +1,6 @@
 {
   "name": "@raidiant/notifai",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "type": "module",
   "description": "Send native phone notifications from agents and local programs",
   "bin": {
