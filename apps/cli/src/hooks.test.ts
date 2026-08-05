@@ -6,7 +6,7 @@ import type {
   ReplyView,
   SubmissionReceipt,
   SubmitNotificationRequestT,
-} from '@notifai/protocol'
+} from '@raidiant/notifai-protocol'
 import { describe, expect, it } from 'vitest'
 import type { ApiClient } from './client.js'
 import { EXIT, askCommand, hookRunCommand, type CommandDeps, type CommandIo } from './commands.js'

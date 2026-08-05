@@ -29,7 +29,7 @@ importers:
       '@clack/prompts':
         specifier: ^1.7.0
         version: 1.7.0
-      '@notifai/protocol':
+      '@raidiant/notifai-protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
       commander:

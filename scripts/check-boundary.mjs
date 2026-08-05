@@ -65,7 +65,7 @@ const FORBIDDEN_FILE_PATTERNS = [
 /** Import/require patterns that would couple public code to private code. */
 const FORBIDDEN_SOURCE_PATTERNS = [
   { pattern: /@notifai\/server/, reason: 'imports the private server package' },
-  { pattern: /@notifai\/contracts/, reason: 'imports the private contracts package (use @notifai/protocol)' },
+  { pattern: /@notifai\/contracts/, reason: 'imports the private contracts package (use @raidiant/notifai-protocol)' },
   { pattern: /@notifai\/dashboard/, reason: 'imports the private dashboard package' },
   { pattern: /server-internal/, reason: 'references a private server-internal module' },
   { pattern: /testcontainers/i, reason: 'depends on the private integration-test stack' },

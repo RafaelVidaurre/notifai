@@ -23,7 +23,7 @@ import {
   type CommandDeps,
 } from './commands.js'
 import { defaultCredentialStore } from './credentials.js'
-import type { Platform } from '@notifai/protocol'
+import type { Platform } from '@raidiant/notifai-protocol'
 
 const deps: CommandDeps = {
   io: realIo(),

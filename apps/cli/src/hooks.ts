@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import type { LifecycleEndState, ReplyView } from '@notifai/protocol'
+import type { LifecycleEndState, ReplyView } from '@raidiant/notifai-protocol'
 import type { ApiClient } from './client.js'
 import {
   loadConfig,

@@ -11,7 +11,7 @@ import type {
   PollPairingResponse,
   SubmissionReceipt,
   SubmitNotificationRequestT,
-} from '@notifai/protocol'
+} from '@raidiant/notifai-protocol'
 
 export class ApiCallError extends Error {
   constructor(

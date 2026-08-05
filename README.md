@@ -7,9 +7,9 @@ terminal.
 
 This repository is the public home of:
 
-- **`apps/cli`** — the `notifai` command-line tool (`@notifai/cli`).
+- **`apps/cli`** — the `notifai` command-line tool (`@raidiant/notifai`).
 - **`packages/protocol`** — the client-visible wire contract
-  (`@notifai/protocol`): notification draft schemas, REST v1
+  (`@raidiant/notifai-protocol`): notification draft schemas, REST v1
   request/response types, the status vocabulary, and capability
   negotiation. The CLI validates drafts offline against the same bundled
   capability documents the service enforces.

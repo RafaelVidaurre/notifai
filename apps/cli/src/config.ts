@@ -3,7 +3,7 @@ import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { parse as parseToml } from 'smol-toml'
-import type { CLI_SOUNDS, INTERRUPTION_LEVELS } from '@notifai/protocol'
+import type { CLI_SOUNDS, INTERRUPTION_LEVELS } from '@raidiant/notifai-protocol'
 
 /**
  * Layered configuration with provenance. Most specific wins:

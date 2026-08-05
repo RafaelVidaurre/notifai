@@ -7,7 +7,7 @@ import type {
   ReplyView,
   SubmissionReceipt,
   SubmitNotificationRequestT,
-} from '@notifai/protocol'
+} from '@raidiant/notifai-protocol'
 import { describe, expect, it } from 'vitest'
 import { ApiCallError, NetworkError, type ApiClient } from './client.js'
 import {

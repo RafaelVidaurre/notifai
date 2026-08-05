@@ -10,7 +10,7 @@ import {
   PLATFORMS,
   type Platform,
   type SubmissionReceipt,
-} from '@notifai/protocol'
+} from '@raidiant/notifai-protocol'
 import type { CliConfig } from './config.js'
 
 type CliSound = (typeof CLI_SOUNDS)[number]

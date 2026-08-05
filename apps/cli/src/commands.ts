@@ -11,8 +11,8 @@ import {
   type ListRepliesResponse,
   type Platform,
   type ReplyView,
-} from '@notifai/protocol'
-import { sha256Hex } from '@notifai/protocol/node'
+} from '@raidiant/notifai-protocol'
+import { sha256Hex } from '@raidiant/notifai-protocol/node'
 import {
   ApiCallError,
   NetworkError,
