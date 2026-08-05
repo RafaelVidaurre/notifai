@@ -50,7 +50,7 @@ this repository anywhere new, without the maintainer asking for it in that
 instance. A version, once published, cannot be taken back.
 
 The skill installer source (`SKILLS_SOURCE`) is pinned to the immutable public
-tag `v0.1.2`. In the skills CLI grammar, `owner/repo#ref` selects a Git ref;
+tag `v0.1.3`. In the skills CLI grammar, `owner/repo#ref` selects a Git ref;
 `owner/repo@name` selects a skill. Never point it at an unpublished, mutable,
 or private location.
 

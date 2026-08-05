@@ -16,6 +16,7 @@ function requireValue(ok, message) {
 }
 
 const rootManifest = readJson('package.json')
+const rootLicense = readFileSync(path.join(root, 'LICENSE'), 'utf8')
 const packages = [
   {
     directory: 'apps/cli',
@@ -43,6 +44,10 @@ for (const entry of packages) {
   requireValue(manifest.repository?.directory === directory, `${manifest.name}: repository.directory must be ${directory}`)
   requireValue(manifest.homepage === 'https://github.com/RafaelVidaurre/notifai#readme', `${manifest.name}: homepage is missing or unexpected`)
   requireValue(manifest.bugs?.url === 'https://github.com/RafaelVidaurre/notifai/issues', `${manifest.name}: bugs URL is missing or unexpected`)
+  requireValue(
+    readFileSync(path.join(root, directory, 'LICENSE'), 'utf8') === rootLicense,
+    `${manifest.name}: package LICENSE must exactly match the repository LICENSE`,
+  )
   requireValue(
     JSON.stringify(manifest.files) === JSON.stringify(['dist', 'src', 'tsconfig.json']),
     `${manifest.name}: files allowlist must be dist, src, tsconfig.json`,
@@ -96,7 +101,7 @@ for (const { manifest } of packages) {
 for (const relative of ['LICENSE', 'NOTICE', 'SECURITY.md', 'CONTRIBUTING.md', 'docs/BOUNDARY.md']) {
   requireValue(readFileSync(path.join(root, relative), 'utf8').trim().length > 0, `${relative} must not be empty`)
 }
-requireValue(readFileSync(path.join(root, 'LICENSE'), 'utf8').includes('Apache License'), 'LICENSE must contain Apache-2.0')
+requireValue(rootLicense.includes('Apache License'), 'LICENSE must contain Apache-2.0')
 
 try {
   const licenses = JSON.parse(
