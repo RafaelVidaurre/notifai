@@ -1300,7 +1300,7 @@ describe('init', () => {
     const deps = {
       ...makeDeps(io, client),
       cwd,
-      env: { XDG_CONFIG_HOME: path.join(cwd, 'config'), XDG_STATE_HOME: '/proc/notifai-unwritable' },
+      env: { XDG_CONFIG_HOME: path.join(cwd, 'config'), XDG_STATE_HOME: '/dev/null' },
     }
 
     await expect(initCommand(deps, { hooks: false, skills: false })).resolves.toBe(EXIT.failed)

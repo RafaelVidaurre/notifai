@@ -1096,7 +1096,7 @@ describe('pruning abandoned session state', () => {
   })
 
   it('never fails a hook because housekeeping could not run', () => {
-    expect(pruneAbandonedSessions({ XDG_STATE_HOME: '/proc/nonexistent/nope' }, REAL)).toBe(0)
+    expect(pruneAbandonedSessions({ XDG_STATE_HOME: '/dev/null' }, REAL)).toBe(0)
   })
 
   it('bounds what one runaway question can write to disk', () => {
