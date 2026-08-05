@@ -33,15 +33,19 @@ If a change needs a new top-level entry, workspace package, or file kind,
 extend the allowlist in `scripts/check-boundary.mjs` in the same commit and
 justify it in the commit message. When in doubt, it stays private.
 
-## Publication is not yours to perform
+## Releasing is not yours to decide
 
-Both packages carry `"private": true`. Do not change that, do not run
-`npm publish`, do not create releases or tags, and do not push this
-repository anywhere new. Publication — the first push of a public remote,
-package names, npm scope, license — is an explicit maintainer decision.
+This repository is published, and `@raidiant/notifai` and
+`@raidiant/notifai-protocol` are on npm as of 2026-08-05. That does not
+make the next release routine.
+
+Do not run `npm publish`, do not create releases or tags, and do not push
+this repository anywhere new, without the maintainer asking for it in that
+instance. A version, once published, cannot be taken back.
+
 The skill installer source (`SKILLS_SOURCE`) stays empty and guarded until
-a tagged release exists; never point it at an unpublished or private
-location.
+a tagged release exists to point it at; never point it at an unpublished or
+private location.
 
 ## npm credentials
 
