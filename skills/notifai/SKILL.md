@@ -37,12 +37,17 @@ Four implications cover most sends:
   approve from a phone. "Done." sends them back to the terminal to find
   out what to do next, which is the thing the notification was meant to
   save them.
-- **A notification that asks must be able to be answered.** If what comes
-  next is a question, put the choices on that same notification with
-  `--reply --reply-choice` (add `--no-block` so announcing finished work
-  does not hold the turn open). A banner that asks "want me to do X?" with
-  no buttons is worse than one that does not ask: it invites a reply the
-  surface cannot take, so they return to the terminal anyway.
+- **A notification that asks must be able to be answered.** A banner that
+  asks "want me to do X?" with no buttons is worse than one that does not
+  ask: it invites a reply the surface cannot take, so they return to the
+  terminal anyway.
+
+  So do not bolt a question onto a completion notice. Announce the finished
+  work with `send`, and ask with `notifai ask --choice` — it puts the same
+  buttons on the banner *and* the turn-end hook returns the answer to you.
+  `send --reply` is for when you are waiting right now; it blocks. There is
+  no third mode where you ask and nobody listens, and the CLI rejects the
+  attempt rather than letting the user tap a button that does nothing.
 
 When there genuinely is more to say — the failing test output, the reasoning
 behind a recommendation, the full diff summary — that is what `--detail`
@@ -180,7 +185,8 @@ answer=$(notifai send \
   by continuing with the default you stated, and say plainly which assumption
   you took. Do not re-notify to nag.
 - `notifai replies <request_id>` retrieves an answer that arrived after you
-  stopped waiting; `--reply --no-block` sends without blocking at all.
+  stopped waiting. Reaching for it means holding a request id across turns,
+  so prefer `notifai ask`, which hands the answer back without one.
 - Both companions can answer. The one difference: on iOS a closed question's
   choices are buttons on the banner itself, and on macOS they are buttons in
   the app, with the banner offering free text. The answer reaches you the same

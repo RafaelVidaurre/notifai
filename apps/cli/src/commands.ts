@@ -368,9 +368,27 @@ export async function sendCommand(
     deps.io.err('Use --reply with --reply-timeout, --reply-window, --reply-choice, or --no-block.')
     return EXIT.usage
   }
-  const replyTimeout = flags.noBlock ? 0 : (flags.replyTimeout ?? 900)
+  const replyTimeout = flags.replyTimeout ?? 900
   if (flags.reply && !isNonNegativeInteger(replyTimeout)) {
     deps.io.err('--reply-timeout must be a non-negative integer number of seconds.')
+    return EXIT.usage
+  }
+  // Asking while declaring that nothing will wait for the answer. The reply is
+  // captured server-side and then unreachable: only a blocking send waits for
+  // it, and the hook path drains questions registered by `ask`, never a send's
+  // request id. So the user gets a real button, taps it, and nothing happens —
+  // worse than a banner that never asked, because it spends their attention
+  // and their trust in the channel.
+  //
+  // Both spellings of "do not wait" are rejected, because the defect is the
+  // zero wait and not the flag that produced it.
+  if (flags.reply && (flags.noBlock || replyTimeout === 0)) {
+    deps.io.err(
+      'A question needs someone to hear the answer, so --reply cannot be combined ' +
+        'with --no-block or --reply-timeout 0.\n' +
+        'To ask and end the turn, use `notifai ask` — the turn-end hook returns the answer.\n' +
+        'To announce finished work, drop --reply and its choices.',
+    )
     return EXIT.usage
   }
   if (
@@ -431,7 +449,8 @@ export async function sendCommand(
     const receiptExit = receiptExitCode(receipt)
     if (!flags.json) deps.io.out(formatReceipt(receipt))
 
-    if (!flags.reply || receiptExit !== EXIT.ok || replyTimeout === 0) {
+    // A zero wait can no longer reach here: --reply guarantees a positive one.
+    if (!flags.reply || receiptExit !== EXIT.ok) {
       if (flags.json) {
         deps.io.out(JSON.stringify(flags.reply ? { receipt, replies: [] } : receipt, null, 2))
       }

@@ -142,7 +142,9 @@ program
     'with --reply, ask a closed question (2-6 answers); one value splits on commas, or repeat the flag',
     (v: string, all: string[]) => [...all, v], [],
   )
-  .option('--no-block', 'send with the reply action without waiting for an answer')
+  // Kept registered, and always a usage error with --reply, so the caller gets
+  // a message pointing at `ask` instead of "unknown option".
+  .option('--no-block', 'rejected with --reply; use `notifai ask` to ask and end the turn')
   .option('--wait <seconds>', 'how long to wait for provider outcomes', (v: string) => Number(v))
   .option('--no-wait', 'return immediately after acceptance')
   .option('--idempotency-key <key>', 'safe-retry key (default: random)')

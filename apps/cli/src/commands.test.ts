@@ -218,18 +218,17 @@ describe('command contracts', () => {
     expect(io.errLines.join('\n')).toContain('platform.ios.badge')
   })
 
-  it('maps reply flags into the draft and does not poll with --no-block', async () => {
+  it('rejects a question nobody will wait for', async () => {
+    // --reply asks; --no-block declares nothing will wait. The answer would be
+    // captured server-side and then reachable only by hand, so the user taps a
+    // real button and nothing happens — worse than never asking, because it
+    // spends their attention and their trust in the channel.
     const io = new CapturedIo()
-    let submitted: SubmitNotificationRequestT | undefined
-    let replyCalls = 0
+    let submitCalls = 0
     const client = {
-      submit: async (body: SubmitNotificationRequestT) => {
-        submitted = body
+      submit: async () => {
+        submitCalls += 1
         return receipt
-      },
-      replies: async () => {
-        replyCalls += 1
-        return replyResponse()
       },
     } as unknown as ApiClient
 
@@ -241,9 +240,54 @@ describe('command contracts', () => {
         replyWindow: 3_600,
         noBlock: true,
       }),
+    ).toBe(EXIT.usage)
+    expect(submitCalls).toBe(0)
+    expect(io.errLines.join('\n')).toContain('notifai ask')
+  })
+
+  it('maps reply flags into the draft and waits for the answer', async () => {
+    const io = new CapturedIo()
+    let submitted: SubmitNotificationRequestT | undefined
+    const client = {
+      submit: async (body: SubmitNotificationRequestT) => {
+        submitted = body
+        return receipt
+      },
+      replies: async () => replyResponse([reply]),
+    } as unknown as ApiClient
+
+    expect(
+      await sendCommand(makeDeps(io, client), {
+        title: 'Question',
+        body: 'Deploy?',
+        reply: true,
+        replyWindow: 3_600,
+        replyTimeout: 30,
+      }),
     ).toBe(EXIT.ok)
     expect(submitted?.draft.reply).toEqual({ expires_in_seconds: 3_600 })
-    expect(replyCalls).toBe(0)
+  })
+
+  it('rejects --reply-timeout 0, the other spelling of nobody waiting', async () => {
+    const io = new CapturedIo()
+    let submitCalls = 0
+    const client = {
+      submit: async () => {
+        submitCalls += 1
+        return receipt
+      },
+    } as unknown as ApiClient
+
+    expect(
+      await sendCommand(makeDeps(io, client), {
+        title: 'Question',
+        body: 'Deploy?',
+        reply: true,
+        replyTimeout: 0,
+      }),
+    ).toBe(EXIT.usage)
+    expect(submitCalls).toBe(0)
+    expect(io.errLines.join('\n')).toContain('notifai ask')
   })
 
   it.each([
@@ -261,14 +305,17 @@ describe('command contracts', () => {
 
   it('suppresses the question warning when --reply is present', async () => {
     const io = new CapturedIo()
-    const client = { submit: async () => receipt } as unknown as ApiClient
+    const client = {
+      submit: async () => receipt,
+      replies: async () => replyResponse([reply]),
+    } as unknown as ApiClient
 
     expect(
       await sendCommand(makeDeps(io, client), {
         title: 'Deploy?',
         body: 'Choose when ready.',
         reply: true,
-        noBlock: true,
+        replyTimeout: 30,
       }),
     ).toBe(EXIT.ok)
     expect(io.errLines).toEqual([])
