@@ -62,11 +62,19 @@ const FORBIDDEN_FILE_PATTERNS = [
   /\.xcworkspace$/i,
 ]
 
-/** Import/require patterns that would couple public code to private code. */
+/**
+ * Import/require patterns that would couple public code to private code.
+ *
+ * `control` is a string the pattern MUST still match, asserted before any
+ * file is read. These patterns name private packages, so they change whenever
+ * those packages are renamed — and a pattern that has quietly stopped
+ * matching reports a clean tree, which is indistinguishable from a tree that
+ * is actually clean. That already happened once here.
+ */
 const FORBIDDEN_SOURCE_PATTERNS = [
-  { pattern: /@notifai\/server/, reason: 'imports the private server package' },
-  { pattern: /@notifai\/contracts/, reason: 'imports the private contracts package (use @raidiant/notifai-protocol)' },
-  { pattern: /@notifai\/dashboard/, reason: 'imports the private dashboard package' },
+  { pattern: /@raidiant\/notifai-server/, reason: 'imports the private server package', control: "from '@raidiant/notifai-server'" },
+  { pattern: /@raidiant\/notifai-contracts/, reason: 'imports the private contracts package (use @raidiant/notifai-protocol)', control: "from '@raidiant/notifai-contracts'" },
+  { pattern: /@raidiant\/notifai-dashboard/, reason: 'imports the private dashboard package', control: "from '@raidiant/notifai-dashboard'" },
   { pattern: /server-internal/, reason: 'references a private server-internal module' },
   { pattern: /testcontainers/i, reason: 'depends on the private integration-test stack' },
   { pattern: /from\s+['"](?:\.\.\/)*\.\.\/\.\.\/(?:apps|packages|ios|infra)\//, reason: 'relative import escapes the repository' },
@@ -74,6 +82,14 @@ const FORBIDDEN_SOURCE_PATTERNS = [
 
 const SOURCE_EXTENSIONS = new Set(['.ts', '.js', '.mjs', '.cjs', '.tsx', '.jsx', '.json', '.yaml', '.yml'])
 const SKIP_DIRS = new Set(['.git', 'node_modules', 'dist', 'coverage'])
+
+for (const { pattern, control } of FORBIDDEN_SOURCE_PATTERNS) {
+  if (control !== undefined && !pattern.test(control)) {
+    console.error(`error: ${pattern} no longer matches its control string (${control}).`)
+    console.error('A pattern that cannot match its own example cannot clear a tree.')
+    process.exit(2)
+  }
+}
 
 const failures = []
 

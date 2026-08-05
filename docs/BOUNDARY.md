@@ -42,8 +42,8 @@ open decision tracked privately.
   identifiers, App Store metadata.
 - Private product records: internal decision logs, incident evidence,
   roadmaps, user/device identifiers, cost data.
-- Imports of private packages (`@notifai/server`, `@notifai/contracts`,
-  `@notifai/dashboard`) or relative imports that reach outside this
+- Imports of private packages (`@raidiant/notifai-server`, `@raidiant/notifai-contracts`,
+  `@raidiant/notifai-dashboard`) or relative imports that reach outside this
   repository.
 
 ## Enforcement
