@@ -194,7 +194,7 @@ describe('presence gate', () => {
     expect(isUserAway({ last_prompt_at: AWAY }, config, NOW, null)).toBe(true)
   })
 
-  // The case that motivated NotifAI-d3p: "run the full test suite", then three
+  // The case that motivated this: "run the full test suite", then three
   // minutes of watching. Elapsed time alone said away; the machine knows better.
   it('keeps a user who is watching a long turn present, however long the turn ran', () => {
     const { env, deps } = harness()
@@ -202,7 +202,7 @@ describe('presence gate', () => {
     expect(isUserAway({ last_prompt_at: AWAY }, config, NOW, 3)).toBe(false)
   })
 
-  // NotifAI-357, found by a live Claude Code session: a spawned agent's session
+  // Found by a live Claude Code session: a spawned agent's session
   // always has a just-set last_prompt_at, so requiring session silence too meant
   // its FIRST question could never escalate — the "kick off agents and walk
   // away" case the feature is for.
@@ -244,9 +244,10 @@ describe('presence gate', () => {
 })
 
 /**
- * U-068: "Even if I'm on my machine I might still want notifications, I
- * shouldn't need to stop using it." Presence is a precondition only while the
- * user wants it to be, and switching it off must not disturb the grace timer.
+ * Wanting notifications while still at the machine is a legitimate setting —
+ * nobody should have to stop using their computer in order to be reached.
+ * Presence is a precondition only while the user wants it to be, and switching
+ * it off must not disturb the grace timer.
  */
 describe('presence gating is optional (require_idle)', () => {
   function writeGlobalConfig(h: Harness, toml: string): void {
@@ -321,7 +322,7 @@ describe('presence gating is optional (require_idle)', () => {
   })
 })
 
-describe('terminal-first grace window (U-061)', () => {
+describe('terminal-first grace window', () => {
   /** Registers a question asked `agoMs` ago, with the user long since silent. */
   function pending(h: Harness, session: string, agoMs: number): void {
     writeSessionState(session, h.env, { last_prompt_at: AWAY })
@@ -466,11 +467,11 @@ describe('Cursor stop output', () => {
 })
 
 /**
- * NotifAI-h02. Rafael, 2026-08-03, on the questions piling up on his phone:
- * "I see no value cause they are stale". Every one of them was a delivered
+ * Stale questions piling up on a phone are worse than no questions at all:
+ * they teach the user to ignore the surface. Every one of them was a delivered
  * question whose ids had been thrown away, so nothing could reach it again.
  */
-describe('superseding a live question (NotifAI-h02)', () => {
+describe('superseding a live question', () => {
   /** The lifecycle state of each retirement push the recorder captured. */
   function retirements(h: Harness): { state: unknown; retires: unknown }[] {
     return h.recorder.submitted
@@ -568,7 +569,7 @@ describe('superseding a live question (NotifAI-h02)', () => {
   })
 })
 
-describe('a question that outlives its session (NotifAI-lqq)', () => {
+describe('a question that outlives its session', () => {
   function retirements(h: Harness): { state: unknown; retires: unknown }[] {
     return h.recorder.submitted
       .filter((s) => s.draft.event === 'question_retired')
@@ -717,7 +718,7 @@ describe('ask registration', () => {
     expect(readSessionState('a2', h.env).pending?.choices).toEqual(['Yes, ship it', 'No, hold'])
   })
 
-  it('resolves the session as flag, then hook pointer, then NOTIFAI_SESSION (D-066)', async () => {
+  it('resolves the session as flag, then hook pointer, then NOTIFAI_SESSION', async () => {
     // The exported id is often a chosen label while hook state is keyed by the
     // harness's own id, so the pointer must outrank the env var.
     const h = harness()
@@ -765,7 +766,7 @@ describe('user-prompt-submit hook', () => {
     expect(retirement?.reply).toBeUndefined()
   })
 
-  it('marks the retirement done/answered_elsewhere so it ships silently (NotifAI-d3y)', async () => {
+  it('marks the retirement done/answered_elsewhere so it ships silently', async () => {
     // A state change is not news: the retirement must ride the wire as a
     // lifecycle update, which the server renders as a background push — the
     // old "Answered" tombstone alert told the user what they just did.
@@ -842,11 +843,11 @@ describe('malformed input', () => {
   })
 })
 
-describe('telling concurrent agents apart (NotifAI-zbv)', () => {
+describe('telling concurrent agents apart', () => {
   it('stamps the harness session on the question it pushes', async () => {
     // The hook has always known session_id and never passed it on, so two
     // agents in separate worktrees produced identical notifications and the
-    // user could answer the wrong one's question (D-042).
+    // user could answer the wrong one's question.
     const h = harness([], 900)
     registerQuestion('sess-abc', h.env, { question: 'Ship it?' }, NOW)
 
@@ -876,7 +877,7 @@ describe('telling concurrent agents apart (NotifAI-zbv)', () => {
   })
 })
 
-describe('clock jumps (NotifAI-hsa)', () => {
+describe('clock jumps', () => {
   const config = loadConfig({ cwd: '/nowhere', env: {} })
 
   it('does not hijack a terminal because the clock jumped forward', () => {
@@ -919,11 +920,11 @@ describe('clock jumps (NotifAI-hsa)', () => {
 })
 
 /**
- * NotifAI-e20. SessionEnd cleans up, but a crashed harness never reaches it,
+ * SessionEnd cleans up, but a crashed harness never reaches it,
  * and roughly a hundred sessions a day is tens of thousands of dead files a
  * year that nothing reads.
  */
-describe('pruning abandoned session state (NotifAI-e20)', () => {
+describe('pruning abandoned session state', () => {
   function sessionFile(h: Harness, name: string): string {
     return path.join(h.env['XDG_STATE_HOME'] as string, 'notifai', 'sessions', name)
   }
@@ -981,10 +982,10 @@ describe('pruning abandoned session state (NotifAI-e20)', () => {
 })
 
 /**
- * NotifAI-0vk, second half. Path-independent ownership stops the usual cause
+ * Path-independent ownership stops the usual cause
  * of two handlers firing; this stops the consequence when something else does.
  */
-describe('two hooks racing one question (NotifAI-0vk)', () => {
+describe('two hooks racing one question', () => {
   const REAL = Date.now()
 
   it('lets exactly one process push', () => {

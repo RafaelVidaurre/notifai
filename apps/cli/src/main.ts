@@ -160,7 +160,7 @@ program
     }
     delete sendOpts['block']
     // Long-form detail is usually a build log or a diff summary, which nobody
-    // wants to shell-escape onto a command line (D-059).
+    // wants to shell-escape onto a command line.
     const detailFile = sendOpts['detailFile']
     delete sendOpts['detailFile']
     if (typeof detailFile === 'string') {
@@ -229,7 +229,7 @@ program
   .description('Internal: run a harness hook (reads hook JSON on stdin)')
   // Inert, and the point of it is that it is inert: the installed command line
   // carries a marker that says "NotifAI wrote this" independently of which
-  // checkout wrote it (NotifAI-0vk).
+  // checkout wrote it.
   .option('--owner <name>', 'internal ownership marker')
   .option('--harness <name>', 'internal harness output adapter')
   .action(async (event: string, opts: { harness?: string }) => {

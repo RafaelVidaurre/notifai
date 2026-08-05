@@ -839,7 +839,7 @@ describe('init', () => {
   })
 
   it('run unattended, names the optional steps instead of running or asking about them', async () => {
-    // NotifAI-chu.2: an agent's init must not reach for npx or a prompt.
+    // An agent's init must not reach for npx or a prompt.
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-agent-'))
     const io = new CapturedIo()
     const deps = { ...makeDeps(io, {} as ApiClient), cwd }
@@ -898,7 +898,7 @@ describe('init', () => {
   })
 })
 
-describe('an outage is not an answer (NotifAI-mw6)', () => {
+describe('an outage is not an answer', () => {
   /**
    * The dangerous shape: the first poll succeeds, then connectivity drops and
    * never comes back. waitForReply only throws when NO poll ever succeeded, so
@@ -977,7 +977,7 @@ describe('an outage is not an answer (NotifAI-mw6)', () => {
   })
 })
 
-describe('asking before the hooks have ever run (NotifAI-91f)', () => {
+describe('asking before the hooks have ever run', () => {
   it('tells Claude Code to send a prompt without falsely requiring a restart', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-firstrun-'))
     mkdirSync(path.join(cwd, '.claude'), { recursive: true })
@@ -1014,11 +1014,11 @@ describe('asking before the hooks have ever run (NotifAI-91f)', () => {
 })
 
 /**
- * NotifAI-e74. A CLI newer than its server produced "hook failed, deferring to
+ * A CLI newer than its server produced "hook failed, deferring to
  * the terminal", which reads like a flaky network, while escalation was in
  * fact completely broken in production.
  */
-describe('a server behind this CLI (NotifAI-e74)', () => {
+describe('a server behind this CLI', () => {
   it('names the field the server rejected instead of swallowing it', () => {
     const rejection = new ApiCallError(422, 'unsupported_field', 'The draft was not accepted.', null, [
       { code: 'unsupported_field', path: '/lifecycle', message: 'Unknown property.' },
@@ -1082,8 +1082,8 @@ describe('a server behind this CLI (NotifAI-e74)', () => {
   })
 })
 
-/** D-058: first-reply-wins is the right default, silently is the wrong way. */
-describe('a second device that disagrees (NotifAI-7e1)', () => {
+/** First-reply-wins is the right default, silently is the wrong way. */
+describe('a second device that disagrees', () => {
   function view(overrides: Partial<ReplyView>): ReplyView {
     return {
       reply_id: 'rpl',

@@ -23,7 +23,7 @@ export interface ApnsEnvelope {
  * estimation. Transport headers such as expiration and collapse are owned by
  * the server's APNs renderer rather than the public draft.
  */
-/** Dispatch-time Project identity resolved by the server (D-038). */
+/** Dispatch-time Project identity resolved by the server. */
 export interface ProjectIdentity {
   /** User-facing sender name; companions fall back to the identifier. */
   name?: string | null
@@ -33,7 +33,7 @@ export interface ProjectIdentity {
 
 /**
  * What a companion needs to name this delivery back to the server. The receipt
- * token is the delivery's own secret (NotifAI-gyu): it lets an extension
+ * token is the delivery's own secret: it lets an extension
  * acknowledge arrival without a user session, which is why neither Notification
  * Service Extension touches the keychain any more.
  */
@@ -58,7 +58,7 @@ export function buildApnsEnvelope(
   projectIdentity: ProjectIdentity | null = null,
   /**
    * Server-owned close time of this request's reply window. Companions keep
-   * their notification history on-device (D-036), so the deadline travels with
+   * their notification history on-device, so the deadline travels with
    * the notification instead of requiring a lookup to offer a reply later.
    */
   replyExpiresAt: Date | null = null,
@@ -161,14 +161,14 @@ function notifaiKey(
       : {}),
     ...(draft.delivery.collapse_key !== null ? { collapse_key: draft.delivery.collapse_key } : {}),
     ...(draft.project !== undefined ? { project: draft.project } : {}),
-    // Session badge input (D-042); companions hash it into a shape+color.
+    // Session badge input; companions hash it into a shape+color.
     ...(draft.session !== undefined ? { session: draft.session } : {}),
-    // Sender identity for communication-style presentation (D-038).
+    // Sender identity for communication-style presentation.
     ...(projectIdentity?.name != null ? { project_name: projectIdentity.name } : {}),
     ...(projectIdentity?.imageUrl != null ? { project_image_url: projectIdentity.imageUrl } : {}),
     ...(options?.custom_data !== undefined ? { data: options.custom_data } : {}),
     ...(mediaUrl !== null ? { media_url: mediaUrl } : {}),
-    // A flag, never the content (D-059). Long-form detail is up to 16 KiB and
+    // A flag, never the content. Long-form detail is up to 16 KiB and
     // the whole envelope is 4096 bytes, so the companion is told there is
     // something to fetch and fetches it when the user opens the notification.
     ...(draft.presentation.detail !== undefined ? { has_detail: true } : {}),

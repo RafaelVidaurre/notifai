@@ -516,7 +516,7 @@ interface ReplyWaitResult {
   timedOut: boolean
   /**
    * The wait ended while polls were failing, so silence is unproven: the user
-   * may well have answered and we could not see it (NotifAI-mw6).
+   * may well have answered and we could not see it.
    */
   degraded: boolean
 }
@@ -578,7 +578,7 @@ export async function waitForReply(
 /**
  * Shared by every surface that waits: "the user did not answer" and "I could
  * not find out" must not look the same, because agents branch on the exit code
- * and one of those two branches is safe to proceed from (NotifAI-mw6).
+ * and one of those two branches is safe to proceed from.
  */
 const DEGRADED_WAIT_WARNING =
   'notifai: the wait ended during a network outage, so this is "could not find out", ' +
@@ -595,7 +595,7 @@ function printReplies(deps: CommandDeps, replies: ReplyView[]): void {
 }
 
 /**
- * The other half of first-reply-wins (D-058).
+ * The other half of first-reply-wins.
  *
  * A blocking send returns the first non-empty batch and acts on it, so a later
  * answer that disagrees is silently ignored. That is the right default — an
@@ -781,7 +781,7 @@ export async function hookRunCommand(
     }
     // UserPromptSubmit runs in front of the user's own prompt under a 15s
     // harness ceiling and can make two calls, so each gets a small slice of it;
-    // Stop is allowed to block and keeps the ordinary budget (NotifAI-tcn).
+    // Stop is allowed to block and keeps the ordinary budget.
     const client = makeClient(
       deps,
       baseUrl,
@@ -841,7 +841,7 @@ export async function hookRunCommand(
 }
 
 /**
- * What went wrong, in terms of what to do about it (NotifAI-e74).
+ * What went wrong, in terms of what to do about it.
  *
  * On 2026-08-03 a contract change shipped without the server deploy that goes
  * with it. The CLI stamped `lifecycle` on every question draft, the deployed
@@ -901,7 +901,7 @@ export function askCommand(deps: CommandDeps, question: string, flags: AskFlags)
   // project directory and we read it back here. The pointer outranks the
   // NOTIFAI_SESSION fallback deliberately: the exported id is often a chosen
   // label rather than the harness's own id, and the hooks key state by the
-  // latter — the env var is only trusted when no hook has spoken (D-066).
+  // latter — the env var is only trusted when no hook has spoken.
   const now = (deps.now ?? Date.now)()
   const sessionId =
     flags.session ??
@@ -937,7 +937,7 @@ export function askCommand(deps: CommandDeps, question: string, flags: AskFlags)
     deps.io.out(`Answers offered: ${choices.map((choice) => choice.label).join(' / ')}`)
   }
   // On stdout, not stderr: the agent reads the former and this is only useful
-  // if it is read while there is still time to fix the question (NotifAI-65y).
+  // if it is read while there is still time to fix the question.
   const ambiguous = ambiguousChoiceSplit(flags.choice)
   if (ambiguous !== null) deps.io.out(ambiguous)
   deps.io.out('Question registered. Ask it in the conversation as usual and end your turn.')
@@ -1046,7 +1046,7 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
   const file = settingsFile(harness, flags.global ?? false, deps.cwd, deps.env)
 
   // OpenCode's adapter is a generated plugin module rather than a handler
-  // merged into a settings document, so it owns the whole file (NotifAI-du1).
+  // merged into a settings document, so it owns the whole file.
   if (harness === 'opencode') {
     return installOpencodePlugin(deps, file, {
       execPath,
@@ -1152,7 +1152,7 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
       // a `.codex` directory sits at or above cwd, so a worktree install has to
       // write one file and create one directory in two different places. Doing
       // it silently would leave the next person deriving this the hard way
-      // (NotifAI-rqx).
+      //.
       mkdirSync(layer, { recursive: true })
       deps.io.out('')
       deps.io.out('You are in a worktree. Codex reads project hooks from the main repository,')
@@ -1178,7 +1178,7 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
 /**
  * Writes the OpenCode plugin, replacing any NotifAI plugin already there —
  * including one a different checkout wrote, matched on the managed marker for
- * the same reason command hooks are (NotifAI-0vk).
+ * the same reason command hooks are.
  */
 function installOpencodePlugin(
   deps: CommandDeps,
@@ -1421,7 +1421,7 @@ export function projectSlugFrom(name: string): string {
 export interface InitFlags {
   projectId?: string
   /**
-   * Install the agent guidance skill. Tri-state on purpose (NotifAI-chu.2):
+   * Install the agent guidance skill. Tri-state on purpose:
    * true installs, false skips silently, and undefined means "offer it when a
    * human is present, do nothing when one is not" — an unattended run must
    * never spawn npx against the network by default.
@@ -1588,7 +1588,7 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
 
 /**
  * Whether the deployed server understands the contract this build speaks
- * (NotifAI-e74).
+ *.
  *
  * Every test in the suite runs the CLI and the server from the same commit, so
  * a client sending a field the deployed server has not learned yet is
@@ -1750,7 +1750,7 @@ function hookChecks(deps: CommandDeps): { name: string; ok: boolean; detail: str
   }
 
   // Two checkouts each installing hooks means both fire for the same event, and
-  // the user gets every question twice (NotifAI-0vk).
+  // the user gets every question twice.
   //
   // Compared *within* a harness, not across. Only one harness runs a given
   // session, so having Claude Code and OpenCode both set up is the ordinary
@@ -1808,7 +1808,7 @@ function hookChecks(deps: CommandDeps): { name: string; ok: boolean; detail: str
  * `settingsFile` now writes to the main repository, so this only fires for a
  * file an older build left behind — but that file is indistinguishable from a
  * working install if you go looking, and it is exactly what made this bug take
- * a day to find (NotifAI-rqx). Omitted entirely when there is nothing to say.
+ * a day to find. Omitted entirely when there is nothing to say.
  */
 function codexStrayWorktreeCheck(
   deps: CommandDeps,

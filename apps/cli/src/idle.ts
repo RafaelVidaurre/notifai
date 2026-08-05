@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process'
  * The hooks need to know whether the user is at their desk, and the only signal
  * they had was silence since the last prompt — which includes the agent's own
  * turn, so a user watching a long build was indistinguishable from a user who
- * had left (NotifAI-d3p). This is the corroborating signal.
+ * had left. This is the corroborating signal.
  *
  * null is a first-class answer, not a failure: on a machine with no idle source
  * the caller keeps its previous behaviour rather than guessing. That is why

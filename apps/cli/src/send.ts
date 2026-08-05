@@ -22,7 +22,7 @@ export interface SendFlags {
   /** Long-form markdown for the app's detail view; never on the banner. */
   detail?: string
   event?: string
-  /** What this notification is: update (default), done, or question (D-060). */
+  /** What this notification is: update (default), done, or question. */
   kind?: string
   project?: string
   session?: string
@@ -125,7 +125,7 @@ export function buildDraft(config: CliConfig, flags: SendFlags): DraftBuild {
 
   const project = flags.project ?? config.project.value
   // Harnesses can export NOTIFAI_SESSION once instead of passing the flag
-  // on every send (D-042).
+  // on every send.
   const session = flags.session ?? process.env['NOTIFAI_SESSION']
 
   // Ids are derived from labels so an agent writing a one-liner does not have
@@ -236,7 +236,7 @@ export const CHOICE_USAGE =
   'commas ("Staging,Production"); repeat the flag when a label contains a comma.'
 
 /**
- * Catches the split that looked like it worked (NotifAI-65y).
+ * Catches the split that looked like it worked.
  *
  * `--choice "macOS parity,Long-form detail,Nothing, I'll review"` produced four
  * buttons rather than three, because the third label contained a comma. Nothing

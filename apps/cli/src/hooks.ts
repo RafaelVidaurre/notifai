@@ -14,7 +14,7 @@ import {
 import { buildDraft } from './send.js'
 
 /**
- * Harness hook handlers (NotifAI-hk1).
+ * Harness hook handlers.
  *
  * Claude Code, Codex and OpenCode all expose the same three joints: a blocking
  * pre-approval hook that returns a decision, a turn-end hook, and a hook that
@@ -50,7 +50,7 @@ export interface SessionState {
   pending?: PendingQuestion
   /**
    * Questions that have been delivered to the user's devices and are now dead,
-   * but whose retirement has not been confirmed yet (NotifAI-h02).
+   * but whose retirement has not been confirmed yet.
    *
    * A retirement needs a network call and the moment we learn a question is
    * dead is not always a moment we can make one — `notifai ask` supersedes the
@@ -73,7 +73,7 @@ export interface RetiringQuestion {
 }
 
 /**
- * A retirement that outlived its session (NotifAI-lqq).
+ * A retirement that outlived its session.
  *
  * Per-session parking assumes some later hook in the SAME session will hold a
  * client, and `SessionEnd` is exactly where that assumption breaks: it may not
@@ -139,8 +139,9 @@ export type GraceOutcome =
   | 'no-signal'
 
 /**
- * The terminal-first wait from U-061: the question sits in the terminal for
- * `ask_grace_seconds` from when it was sent, and only then reaches companion devices.
+ * The terminal-first wait: the question sits in the terminal for
+ * `ask_grace_seconds` from when it was sent, and only then reaches companion
+ * devices.
  *
  * Holding a blocking Stop hook open is normally hostile — while it blocks, the
  * harness cannot show its prompt either, so a user wanting to answer locally is
@@ -224,7 +225,7 @@ export function clearSessionState(sessionId: string, env: NodeJS.ProcessEnv): vo
 }
 
 /**
- * Session state a crashed harness left behind (NotifAI-e20).
+ * Session state a crashed harness left behind.
  *
  * `SessionEnd` removes both the marker and the session override, but a harness
  * that crashes or is killed never reaches it. At roughly a hundred sessions a
@@ -258,7 +259,7 @@ export function pruneAbandonedSessions(
         const age = now - statSync(file).mtimeMs
         // A negative age means the clock moved, not that the file is old.
         // Deleting live session state on an NTP correction would lose a
-        // question already on the user's phone (cf. NotifAI-hsa).
+        // question already on the user's phone.
         if (age <= maxAgeMs) continue
         rmSync(file, { force: true })
         removed += 1
@@ -275,7 +276,7 @@ export function pruneAbandonedSessions(
 }
 
 /**
- * One question, one push, even with two Stop hooks racing (NotifAI-0vk).
+ * One question, one push, even with two Stop hooks racing.
  *
  * Path-independent hook ownership stops the *usual* cause of two handlers
  * firing, but it cannot stop every one — two harnesses in one directory, or an
@@ -391,10 +392,10 @@ export function readProjectSession(
  * one — it is wrong in both directions:
  *
  *   - Too long: it counts the agent's own turn, so a user watching a build was
- *     read as absent and had the question pushed at them (NotifAI-d3p).
+ *     read as absent and had the question pushed at them.
  *   - Too short: a session that has just been spawned always has a fresh
  *     prompt, so its FIRST question could never escalate however long its
- *     owner had been gone (NotifAI-357). That is the "kick off some agents and
+ *     owner had been gone. That is the "kick off some agents and
  *     walk away" case this feature mainly exists for, and requiring both
  *     signals to agree is what broke it.
  *
@@ -425,7 +426,7 @@ export function isUserAway(
   // correction, VM resume) hijacks a terminal whose user is sitting right
   // there, and a backward one suppresses escalation for someone genuinely
   // gone. Neither delta is evidence of anything, so it resolves the way every
-  // other absence of evidence does — present (NotifAI-hsa).
+  // other absence of evidence does — present.
   if (silence < 0 || silence > MAX_PLAUSIBLE_SILENCE_MS) return false
   return silence >= threshold * 1000
 }
@@ -477,7 +478,7 @@ async function askAndWait(
     body: string
     choices?: string[]
     event: string
-    /** Which agent is asking; two of them must not look alike (D-042). */
+    /** Which agent is asking; two of them must not look alike. */
     session?: string | undefined
     /** How long the server keeps accepting an answer. */
     windowSeconds: number
@@ -554,7 +555,7 @@ async function answerableDevices(ctx: HookContext): Promise<string[]> {
  *
  * The hook has always known `session_id` and never passed it on, so two agents
  * in separate worktrees produced identical notifications and the user could
- * answer the wrong one's question (NotifAI-zbv). An exported `NOTIFAI_SESSION`
+ * answer the wrong one's question. An exported `NOTIFAI_SESSION`
  * still wins, for coherence rather than vanity: it is THE session id wherever
  * it is set, so a session that exported one before launching must carry
  * the same on its own sends and on the questions its hooks push. A name the
@@ -888,7 +889,7 @@ export async function handleStop(ctx: HookContext, envelope: HookEnvelope): Prom
   }
 
   // Claim before the grace window, not after: two racing hooks would otherwise
-  // both wait, both find the user still absent, and both push (NotifAI-0vk).
+  // both wait, both find the user still absent, and both push.
   // Real clock, deliberately, not `ctx.now` — the claim answers "is another
   // process alive right now", which the injectable clock cannot speak to. It
   // is also the only clock the *other* process shares.
@@ -947,7 +948,7 @@ async function escalate(
   }
 
   // What survives replacing the pending record. `retiring` has to: dropping it
-  // is exactly the class of bug NotifAI-h02 was — a delivered notification
+  // is exactly the class of bug this guards against — a delivered notification
   // whose ids no longer exist anywhere.
   const current = readSessionState(sessionId, ctx.env)
   const carried = {
@@ -1007,7 +1008,7 @@ async function escalate(
  * second, so this cannot make a network call. It drops the local marker — but
  * first moves anything still live on the user's devices into the global
  * retirement queue, because this file was the only record of those ids and no
- * hook for this session will ever run again (NotifAI-lqq). A question whose
+ * hook for this session will ever run again. A question whose
  * agent just exited can receive no answer, so it is orphaned as `expired`.
  */
 export function handleSessionEnd(
@@ -1047,7 +1048,7 @@ export function handleSessionEnd(
 
 /**
  * One session holds one live question, so registering a second one ends the
- * first (NotifAI-h02).
+ * first.
  *
  * This used to replace `pending` wholesale, which silently discarded the
  * `request_id` and `collapse_key` of a question already delivered to the user's
@@ -1055,8 +1056,8 @@ export function handleSessionEnd(
  * unretirable — it sat on the lock screen for ever asking a question no answer
  * could reach. That is where the stale pile-up came from.
  *
- * Supersession is keyed on the session, not the project: Rafael runs several
- * agents in one project at once, and one agent's new question killing another
+ * Supersession is keyed on the session, not the project: several agents may be
+ * running in one project at once, and one agent's new question killing another
  * agent's live one would be worse than the staleness this fixes.
  */
 export function registerQuestion(

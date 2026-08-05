@@ -7,7 +7,7 @@ import { NetworkError, createClient } from './client.js'
  * These run against a real socket rather than a stubbed fetch, because the
  * failure being fixed is a property of the transport: a server that accepts the
  * connection and then says nothing. A mock that resolves or rejects cannot
- * reproduce it (NotifAI-tcn).
+ * reproduce it.
  */
 let server: Server | undefined
 
@@ -27,7 +27,7 @@ async function serving(handler: Parameters<typeof createServer>[1]): Promise<str
   return `http://127.0.0.1:${port}`
 }
 
-describe('a server that never answers (NotifAI-tcn)', () => {
+describe('a server that never answers', () => {
   it('gives up instead of hanging until the harness kills the hook', async () => {
     // Accepts the request, holds the socket open, writes nothing — ever.
     const held: unknown[] = []

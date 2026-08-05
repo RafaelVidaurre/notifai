@@ -2,7 +2,7 @@ import path from 'node:path'
 import { configHome } from './install-hooks.js'
 
 /**
- * The OpenCode adapter (NotifAI-du1).
+ * The OpenCode adapter.
  *
  * OpenCode's extension point is a TypeScript/JavaScript plugin module, not a
  * command hook, so it needs a different adapter rather than a different path

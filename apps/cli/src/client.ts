@@ -91,7 +91,7 @@ export function createClient(
   ): Promise<T> {
     // Without this, a server that accepts the connection and then never answers
     // hangs until the harness kills the whole hook — and the reply-poll deadline
-    // cannot interrupt an individual fetch (NotifAI-tcn). The signal covers the
+    // cannot interrupt an individual fetch. The signal covers the
     // body read too, not just the response headers.
     const limitMs = budgetMs + serverWaitSeconds * 1000
     const signal = AbortSignal.timeout(limitMs)

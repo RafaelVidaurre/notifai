@@ -172,9 +172,9 @@ describe('settings locations', () => {
 /**
  * Codex resolves project hooks against the main repository, so an install run
  * inside a worktree used to write a file Codex never reads — and reported
- * success. Proven against the real binary 2026-08-03 (NotifAI-rqx).
+ * success. Proven against the real binary 2026-08-03.
  */
-describe('a Codex install run inside a git worktree (NotifAI-rqx)', () => {
+describe('a Codex install run inside a git worktree', () => {
   /** The on-disk shape `git worktree add` produces, verified against real git. */
   function repoWithWorktree(): { main: string; worktree: string } {
     const base = mkdtempSync(path.join(os.tmpdir(), 'notifai-wt-'))
@@ -272,7 +272,7 @@ describe('a Codex install run inside a git worktree (NotifAI-rqx)', () => {
   })
 })
 
-describe('upgrading past a dropped event (NotifAI-inb)', () => {
+describe('upgrading past a dropped event', () => {
   it('removes a handler for an event this build no longer serves', () => {
     // Found live in this repo: settings.local.json still ran
     // `main.js hook permission-request`, written by a build that had such an
@@ -324,7 +324,7 @@ describe('upgrading past a dropped event (NotifAI-inb)', () => {
   })
 })
 
-describe('writing the settings file (NotifAI-dqd)', () => {
+describe('writing the settings file', () => {
   function scratch(): string {
     return mkdtempSync(path.join(os.tmpdir(), 'notifai-apply-'))
   }
@@ -390,11 +390,11 @@ describe('finding what is installed', () => {
 })
 
 /**
- * NotifAI-0vk. Ownership was matched on the absolute script path, so a second
+ * Ownership was matched on the absolute script path, so a second
  * checkout did not recognise the first one's handlers as ours: both stayed,
  * the harness ran both, and one question produced two notifications.
  */
-describe('two checkouts (NotifAI-0vk)', () => {
+describe('two checkouts', () => {
   const OTHER = '/Users/rafael/other-checkout/apps/cli/dist/main.js'
 
   function documentWith(command: string): SettingsDocument {
@@ -436,10 +436,10 @@ describe('two checkouts (NotifAI-0vk)', () => {
 })
 
 /**
- * NotifAI-du1. OpenCode's extension point is a plugin module, not a command
+ * OpenCode's extension point is a plugin module, not a command
  * hook, so it needs a different adapter — but deliberately not different logic.
  */
-describe('the OpenCode adapter (NotifAI-du1)', () => {
+describe('the OpenCode adapter', () => {
   const source = opencodePluginSource({
     execPath: EXEC,
     scriptPath: SCRIPT,

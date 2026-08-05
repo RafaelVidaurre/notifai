@@ -144,7 +144,7 @@ describe('draft building', () => {
     })
   })
 
-  it('stamps the project from flag or project config (D-038)', () => {
+  it('stamps the project from flag or project config', () => {
     const { env, cwd } = setup({ projectToml: 'project = "my-app"\n' })
     const config = loadConfig({ cwd, env })
     const fromConfig = buildDraft(config, { title: 'T', body: 'B' })
@@ -155,7 +155,7 @@ describe('draft building', () => {
     expect(fromFlag.draft.project).toBe('other-app')
   })
 
-  it('carries --kind and rejects one outside the vocabulary (D-060)', () => {
+  it('carries --kind and rejects one outside the vocabulary', () => {
     const config = loadConfig({ cwd: base.cwd, env: base.env })
     const done = buildDraft(config, { title: 'T', body: 'B', kind: 'done' })
     if (!done.ok) throw new Error(done.error)

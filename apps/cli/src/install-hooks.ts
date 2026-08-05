@@ -82,7 +82,7 @@ export function hookCommand(
 }
 
 /**
- * Says "NotifAI installed this" without saying which checkout did (NotifAI-0vk).
+ * Says "NotifAI installed this" without saying which checkout did.
  *
  * Ownership used to be matched on the absolute script path, so installing from
  * a second checkout did not recognise the first one's handlers as ours. Both
@@ -232,7 +232,7 @@ export function settingsFile(
 ): string {
   // OpenCode has no settings document to merge into — its adapter is a
   // generated plugin module, so it owns a whole file rather than a handler
-  // inside one (NotifAI-du1). `opencodePluginPath` is its equivalent.
+  // inside one. `opencodePluginPath` is its equivalent.
   if (harness === 'opencode') return opencodePluginPath(global, cwd, env)
   if (harness === 'cursor') {
     const home = env['HOME'] !== undefined && env['HOME'] !== '' ? env['HOME'] : os.homedir()
@@ -260,7 +260,7 @@ export function settingsFile(
  * fired and an identical one at the worktree root did not; removing the main
  * one left nothing firing at all. Writing to cwd therefore produces a silent
  * no-op for anyone whose agent runs in a worktree, which is the normal case
- * under tooling like Orca (NotifAI-rqx).
+ * under tooling like Orca.
  *
  * Claude Code does not share this behaviour — it reads the worktree's own
  * `.claude/settings.local.json` — so this deliberately applies to Codex only.
@@ -291,7 +291,7 @@ export function codexProjectRoot(cwd: string): string {
  * unread — Codex never looks, because nothing at or above cwd told it there was
  * a project layer to load. Proven 2026-08-03: with cwd in a worktree, an *empty*
  * `.codex` directory there was the difference between the main repository's
- * handler running and nothing running (NotifAI-rqx).
+ * handler running and nothing running.
  */
 export function codexLayerDir(cwd: string): string | null {
   const entry = findGitEntry(cwd)
@@ -478,7 +478,7 @@ export interface MergeResult {
  * Only rewriting incoming events left a dropped event's handler in place for
  * ever, and since the binary no longer implements it, it exited 2 with
  * "Unknown hook event" every time the harness fired it — a permanent hook
- * failure that reinstalling could not clear (NotifAI-inb).
+ * failure that reinstalling could not clear.
  */
 export function mergeHooks(
   existing: SettingsDocument,
@@ -523,7 +523,7 @@ export function removeHooks(existing: SettingsDocument, scriptPath: string): Mer
  *
  * Truncating in place lost the user's whole harness configuration if the write
  * failed halfway, and clobbered a concurrent editor's changes; following a
- * symlink wrote through to a target they never named (NotifAI-dqd). So: refuse
+ * symlink wrote through to a target they never named. So: refuse
  * anything that is not a regular file, write a sibling temp file, fsync it, and
  * rename over the original — atomic within a directory on every platform we
  * support.
@@ -610,7 +610,7 @@ export interface Installation {
  *
  * Deliberately looser than `isOurHandler`: this answers "has NotifAI been set
  * up here at all", and a handler installed from a second checkout is still
- * evidence that it has (and is itself worth reporting — NotifAI-0vk).
+ * evidence that it has (and is itself worth reporting).
  */
 function isNotifaiCommand(command: string): boolean {
   return / hook (user-prompt-submit|stop|session-end)\b/.test(command)
@@ -629,7 +629,7 @@ export function findInstallations(cwd: string, env: NodeJS.ProcessEnv = process.
       if (!existsSync(file)) continue
       // OpenCode's adapter is a plugin module, not a settings document, so it
       // is reported as one installation covering all three events rather than
-      // parsed for handlers (NotifAI-du1).
+      // parsed for handlers.
       if (harness === 'opencode') {
         const target = opencodePluginTarget(readFileSync(file, 'utf8'))
         if (target === null) continue

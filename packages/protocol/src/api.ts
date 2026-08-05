@@ -11,7 +11,7 @@ import type { DeliveryState, OverallState, EvidenceStage } from './status.js'
 /** REST v1 wire contract shared by server, CLI, dashboard, and Companion App. */
 
 // ---------------------------------------------------------------------------
-// Machine pairing (Machine Access seam, AD-004)
+// Machine pairing (Machine Access seam)
 // ---------------------------------------------------------------------------
 
 export const BeginPairingRequest = Type.Object(
@@ -196,7 +196,7 @@ export const CompanionReceiptRequest = Type.Object(
 export type CompanionReceiptRequestT = Static<typeof CompanionReceiptRequest>
 
 // ---------------------------------------------------------------------------
-// Inline replies (D-045; opaque text carried from Companion App to agent)
+// Inline replies (opaque text carried from Companion App to agent)
 // ---------------------------------------------------------------------------
 
 export const SubmitReplyRequest = Type.Object(
@@ -212,7 +212,7 @@ export const SubmitReplyRequest = Type.Object(
      */
     choice_id: Type.Optional(Type.String({ minLength: 1, maxLength: 32 })),
     /**
-     * Which surface the user actually answered from (NotifAI-n22). Two iOS
+     * Which surface the user actually answered from. Two iOS
      * routes converge here — the custom text action and the system
      * message-style field, which arrives as a SiriKit intent — and a third is
      * the in-app composer. They looked identical once stored, so a regression
@@ -251,7 +251,7 @@ export interface ReplyView {
   text: string
   /** The agent-facing token for a closed question; null for free text. */
   choice_id: string | null
-  /** Which surface it was answered from, when the device said (NotifAI-n22). */
+  /** Which surface it was answered from, when the device said. */
   source: string | null
   created_at: string
 }
@@ -264,7 +264,7 @@ export interface ListRepliesResponse {
 }
 
 // ---------------------------------------------------------------------------
-// Media intake (AD-005)
+// Media intake
 // ---------------------------------------------------------------------------
 
 export const CreateMediaUploadRequest = Type.Object(
@@ -290,7 +290,7 @@ export interface CreateMediaUploadResponse {
 }
 
 // ---------------------------------------------------------------------------
-// Projects (D-038 lazy identity; user-facing customization surface)
+// Projects (lazy identity; user-facing customization surface)
 // ---------------------------------------------------------------------------
 
 export const UpdateProjectRequest = Type.Object(

@@ -34,7 +34,7 @@ describe('validateDraft', () => {
 
   it('carries the delivery receipt token on both alert and silent pushes', () => {
     // The extension authorizes its receipt with this and nothing else, so a
-    // payload without it is an extension that cannot report (NotifAI-gyu).
+    // payload without it is an extension that cannot report.
     const ids = { requestId: 'req_x', deliveryId: 'del_x', receiptToken: 'r'.repeat(22) }
     const alert = buildApnsEnvelope(draft(), ids, null)
     expect((alert.payload['notifai'] as Record<string, unknown>)['receipt_token']).toBe(
@@ -148,7 +148,7 @@ describe('validateDraft', () => {
     const withReply = draft({ reply: { expires_in_seconds: 86400 } })
 
     expect(validateDraft(withReply, IOS_CAPABILITIES_V1).ok).toBe(true)
-    // D-062: the Mac registers the reply category and answers through the same
+    // The Mac registers the reply category and answers through the same
     // outbox, so a reply targeted at it is no longer rejected.
     expect(validateDraft(withReply, MACOS_CAPABILITIES_V1).ok).toBe(true)
   })
@@ -419,7 +419,7 @@ describe('question lifecycle (D-A, D-B, D-C)', () => {
   })
 })
 
-describe('notification kind (D-060)', () => {
+describe('notification kind', () => {
   const notifaiKeyOf = (d: NotificationDraftT) =>
     buildApnsEnvelope(d, { requestId: 'req_k', deliveryId: 'del_k' }, null).payload[
       'notifai'

@@ -40,7 +40,7 @@ export const ImageRef = Type.Object(
 )
 
 /**
- * Long-form detail, for reading rather than glancing (D-059, NotifAI-n9f).
+ * Long-form detail, for reading rather than glancing.
  *
  * 16 KiB of markdown — comfortably more than the whole APNs envelope, which is
  * the point. This never rides the push: the envelope is 4096 bytes and the
@@ -80,9 +80,9 @@ export const TargetSelector = Type.Union([
 
 export const DeliveryPolicy = Type.Object(
   {
-    /** AD-007: 24h default; 0 requests one immediate attempt with no retries. */
+    /** 24h default; 0 requests one immediate attempt with no retries. */
     ttl_seconds: Type.Integer({ minimum: 0, maximum: 7 * 24 * 3600, default: 86400 }),
-    /** AD-007: no collapse by default; opting in requests replacement semantics. */
+    /** No collapse by default; opting in requests replacement semantics. */
     collapse_key: Type.Union([Type.String({ minLength: 1, maxLength: 64 }), Type.Null()], {
       default: null,
     }),
@@ -113,14 +113,14 @@ export const REPLY_MAX_CHOICES = 6
 
 /**
  * Upper bound on a reply window, pinned to the server's 72-hour content
- * retention (AD-008). A longer window would outlive the stored draft, and the
+ * retention. A longer window would outlive the stored draft, and the
  * server cannot accept an answer to a question it has already forgotten — a
  * choice reply arriving after the sweep was rejected as `unknown_choice` and
  * permanently discarded by the device outbox.
  */
 export const REPLY_MAX_WINDOW_SECONDS = 72 * 3600
 
-/** Opt-in reply channel (D-045). Presence enables the reply action. */
+/** Opt-in reply channel. Presence enables the reply action. */
 export const ReplyRequest = Type.Object(
   {
     /** How long the server accepts a reply for this Notification Request. */
@@ -130,7 +130,7 @@ export const ReplyRequest = Type.Object(
       default: 86400,
     }),
     /**
-     * `text` is the D-045 free-text composer. `choice` asks a closed question
+     * `text` is the free-text composer. `choice` asks a closed question
      * so the agent gets a checkable token back instead of prose it has to
      * interpret. Optional rather than merely defaulted: `Value.Check` does not
      * apply defaults, so a required `kind` would invalidate every reply block
@@ -148,7 +148,7 @@ export const ReplyRequest = Type.Object(
 )
 
 /**
- * Semantic sound names shipped by the iOS Companion App (D-037). Names are
+ * Semantic sound names shipped by the iOS Companion App. Names are
  * intents, not file names, so future channels can map them to their own
  * sound/importance mechanisms.
  */
@@ -215,7 +215,7 @@ export const MacosOptions = Type.Object(
 )
 
 /**
- * Sender-chosen Project identifier slug (D-038). Projects are registered
+ * Sender-chosen Project identifier slug. Projects are registered
  * lazily and idempotently on first send; there is no explicit registration
  * step for agents. Lowercase to keep identifiers canonical across machines.
  */
@@ -243,15 +243,15 @@ export const Lifecycle = Type.Object(
 export type LifecycleT = Static<typeof Lifecycle>
 
 /**
- * What kind of thing this notification *is* (D-060).
+ * What kind of thing this notification *is*.
  *
  * A third axis, and deliberately not a rename of either of the other two.
  * `lifecycle` says whether something still wants the user; `interruption_level`
  * says how loudly to arrive. Neither can express the difference between "the
  * deploy finished" and "the build is still running" — both are ordinary news
  * that wants nothing and arrives quietly, yet a user scanning a day of them
- * cares which is which. Rafael, 2026-08-03: "semantically users care about
- * these details".
+ * cares which is which. The difference is semantic, and it is one users
+ * actually read for.
  *
  * Three values, because three is what an agent can actually be trusted to
  * choose between. Kept closed so the companion can render each one rather than
@@ -300,10 +300,10 @@ export const NotificationDraft = Type.Object(
      * renderers deliver it silently and companions retire what it replaces.
      */
     lifecycle: Type.Optional(Lifecycle),
-    /** Optional Project identity; lazily recorded server-side (D-038). */
+    /** Optional Project identity; lazily recorded server-side. */
     project: Type.Optional(Type.String({ pattern: PROJECT_IDENTIFIER_PATTERN })),
     /**
-     * Opaque per-sender-session identifier (D-042). Companions derive a
+     * Opaque per-sender-session identifier. Companions derive a
      * deterministic avatar badge from it so concurrent agent sessions are
      * visually distinguishable; never interpreted server-side.
      */

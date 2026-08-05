@@ -6,8 +6,7 @@ import { parse as parseToml } from 'smol-toml'
 import type { CLI_SOUNDS, INTERRUPTION_LEVELS } from '@notifai/protocol'
 
 /**
- * Layered configuration with provenance (AD-001 CLI contract). Most specific
- * wins:
+ * Layered configuration with provenance. Most specific wins:
  *
  *   flag > session > project-local > project > machine-global > default
  *
@@ -50,14 +49,14 @@ export interface CliConfig {
   interruption_level: ResolvedValue<CliInterruptionLevel | null>
   /** Project identifier stamped on sends; typically set in .notifai/config.toml. */
   project: ResolvedValue<string | null>
-  /** Free-text notification criteria agents consult before sending (D-039). */
+  /** Free-text notification criteria agents consult before sending. */
   notify_criteria: ResolvedValue<string | null>
   /** Route a registered agent question to companion devices after the presence gate. */
   ask_notifications: ResolvedValue<boolean>
   /**
-   * Whether being at this machine suppresses a question (U-068: "Even if I'm on
-   * my machine I might still want notifications, I shouldn't need to stop using
-   * it").
+   * Whether being at this machine suppresses a question. Sitting at the
+   * keyboard is not the same as not wanting to be reached — needing to stop
+   * using the machine in order to be notified is its own kind of interruption.
    *
    * On, the default, is the original behaviour: a question stays in the
    * terminal while the keyboard is in use, because the person is right there
@@ -88,13 +87,13 @@ export interface CliConfig {
   hook_reply_timeout_seconds: ResolvedValue<number>
   /**
    * Terminal-first grace window, measured from the moment the question was
-   * sent (U-061: "the agent asks the question on the terminal and sets a timer
-   * to wait... say, 5 mins. If that time passses, the agent sends the question
-   * via Notifai"). Nothing reaches the devices until it elapses.
+   * sent: the agent asks in the terminal and starts a timer, and only once it
+   * elapses does the question reach companion devices.
    *
    * A timer, and only a timer. It is configured independently of
    * `away_after_seconds` and honoured whether or not presence is consulted at
-   * all — U-068 asks for these two to be separate things.
+   * all — how long to wait and whether anyone is watching are separate
+   * questions, and answering one should not answer the other.
    */
   ask_grace_seconds: ResolvedValue<number>
 }

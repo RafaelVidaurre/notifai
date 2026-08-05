@@ -1,5 +1,5 @@
 /**
- * Status vocabulary per AD-006. The word "delivered" is intentionally absent:
+ * Status vocabulary. The word "delivered" is intentionally absent:
  * Provider Acceptance is not evidence that a notification was displayed or
  * seen, and Companion Receipt is best-effort diagnostic evidence only.
  */

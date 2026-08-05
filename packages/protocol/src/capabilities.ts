@@ -11,7 +11,7 @@ import {
 import { buildApnsEnvelope, RECEIPT_TOKEN_LENGTH } from './apns.js'
 
 /**
- * Capability Catalog contract (AD-005). Unsupported fields must produce
+ * Capability Catalog contract. Unsupported fields must produce
  * explicit capability results, never silent loss.
  */
 
@@ -46,7 +46,7 @@ export const IOS_CAPABILITIES_V1: CapabilityDocument = {
     { path: 'presentation.title', status: 'supported' },
     { path: 'presentation.body', status: 'supported' },
     { path: 'presentation.subtitle', status: 'supported' },
-    // Never rendered on the banner by design (D-059): it is fetched and shown
+    // Never rendered on the banner by design: it is fetched and shown
     // in the companion's detail view, so it costs nothing against the envelope.
     { path: 'presentation.detail', status: 'supported' },
     {
@@ -128,11 +128,11 @@ export const MACOS_CAPABILITIES_V1: CapabilityDocument = {
     { path: 'presentation.title', status: 'supported' },
     { path: 'presentation.body', status: 'supported' },
     { path: 'presentation.subtitle', status: 'supported' },
-    // Never rendered on the banner by design (D-059): it is fetched and shown
+    // Never rendered on the banner by design: it is fetched and shown
     // in the companion's detail view, so it costs nothing against the envelope.
     { path: 'presentation.detail', status: 'supported' },
     // The Mac registers the reply category and answers through the same
-    // ReplyOutbox as iOS (D-062). One difference worth naming: iOS renders
+    // ReplyOutbox as iOS. One difference worth naming: iOS renders
     // closed questions with a notification content extension, which macOS has
     // no equivalent of, so choices arrive as buttons in the app rather than on
     // the banner. The answer reaches the agent either way.
