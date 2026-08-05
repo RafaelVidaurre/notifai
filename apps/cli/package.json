@@ -1,14 +1,15 @@
 {
   "name": "@raidiant/notifai",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "description": "Send native phone notifications from agents and local programs",
   "bin": {
     "notifai": "dist/main.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "src",
+    "tsconfig.json"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -27,5 +28,29 @@
   },
   "engines": {
     "node": ">=20"
-  }
+  },
+  "license": "Apache-2.0",
+  "author": "Rafael Vidaurre",
+  "homepage": "https://github.com/RafaelVidaurre/notifai#readme",
+  "bugs": {
+    "url": "https://github.com/RafaelVidaurre/notifai/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RafaelVidaurre/notifai.git",
+    "directory": "apps/cli"
+  },
+  "keywords": [
+    "notifications",
+    "cli",
+    "agents",
+    "apns",
+    "push",
+    "ai",
+    "claude",
+    "codex"
+  ]
 }

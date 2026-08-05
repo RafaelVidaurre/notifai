@@ -20,6 +20,11 @@ const root = path.resolve(import.meta.dirname, '..')
 const TOP_LEVEL_ALLOWLIST = new Set([
   '.git',
   '.gitignore',
+  // CI only. Workflow files are scanned for forbidden content like any other
+  // source, so this admits the directory without admitting what it may say —
+  // and nothing here may reference private infrastructure, deployment, or
+  // signing, which is exactly what a CI directory is tempting to fill with.
+  '.github',
   'README.md',
   'AGENTS.md',
   'CLAUDE.md',

@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor is what `engines` promises; the ceiling is what people
+        # actually have. A CLI that agents invoke lands on whatever Node the
+        # user happens to run, so both ends have to stay green.
+        node: ['20', '22', '24']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # First, because a boundary violation makes the rest moot.
+      - run: pnpm check:boundary
+
+      # Protocol before CLI: the CLI resolves its built exports.
+      - run: pnpm -r build
+
+      - run: pnpm -r test
+
+      - run: pnpm lint
+
+      - run: pnpm -r typecheck
+
+      # What would actually ship. Catches a file escaping the allowlist long
+      # before a publish would make it permanent.
+      - name: Inspect publishable contents
+        run: |
+          pnpm --filter @raidiant/notifai-protocol pack --pack-destination /tmp
+          pnpm --filter @raidiant/notifai pack --pack-destination /tmp
+          for f in /tmp/*.tgz; do
+            echo "=== $f ==="
+            tar -tzf "$f" | sort
+          done

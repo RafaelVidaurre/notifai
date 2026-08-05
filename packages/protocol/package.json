@@ -1,7 +1,6 @@
 {
   "name": "@raidiant/notifai-protocol",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -27,5 +26,33 @@
     "typescript": "^5.8.0",
     "vitest": "^3.2.0"
   },
-  "description": "Client-visible NotifAI wire contract: notification drafts, REST v1 request/response types, status vocabulary, and capability negotiation."
+  "description": "Client-visible NotifAI wire contract: notification drafts, REST v1 request/response types, status vocabulary, and capability negotiation.",
+  "license": "Apache-2.0",
+  "author": "Rafael Vidaurre",
+  "homepage": "https://github.com/RafaelVidaurre/notifai#readme",
+  "bugs": {
+    "url": "https://github.com/RafaelVidaurre/notifai/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RafaelVidaurre/notifai.git",
+    "directory": "packages/protocol"
+  },
+  "keywords": [
+    "notifai",
+    "protocol",
+    "typebox",
+    "notifications"
+  ],
+  "files": [
+    "dist",
+    "src",
+    "tsconfig.json"
+  ],
+  "engines": {
+    "node": ">=20"
+  }
 }
