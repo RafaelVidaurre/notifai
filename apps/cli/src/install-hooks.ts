@@ -342,24 +342,63 @@ export function configHome(env: NodeJS.ProcessEnv, variable: string, fallback: s
 }
 
 /** Best-effort detection so `hooks install` usually needs no flags. */
-export function detectHarness(cwd: string): Harness | null {
+/**
+ * Harnesses this *project* shows evidence of, in the working directory only.
+ *
+ * `CLAUDE.md` counts because it is Claude Code's own project file and is
+ * frequently the only marker: a repository can be worked in daily through
+ * Claude Code and never accumulate a `.claude/` directory.
+ *
+ * `AGENTS.md` deliberately counts for nothing. It began as a Codex
+ * convention and is now read by most agent tooling — including Claude Code,
+ * and including this repository, where the two filenames are the same
+ * document. Treating it as evidence of any one harness would be a guess
+ * dressed up as detection.
+ */
+function localHarnessEvidence(cwd: string): Harness[] {
   const found: Harness[] = []
-  if (existsSync(path.join(cwd, '.claude')) || existsSync(path.join(os.homedir(), '.claude'))) {
+  if (existsSync(path.join(cwd, '.claude')) || existsSync(path.join(cwd, 'CLAUDE.md'))) {
     found.push('claude-code')
   }
-  if (existsSync(path.join(cwd, '.codex')) || existsSync(path.join(os.homedir(), '.codex'))) {
-    found.push('codex')
-  }
-  if (existsSync(path.join(cwd, '.cursor')) || existsSync(path.join(os.homedir(), '.cursor'))) {
-    found.push('cursor')
-  }
-  if (
-    existsSync(path.join(cwd, '.opencode')) ||
-    existsSync(path.join(os.homedir(), '.config', 'opencode'))
-  ) {
-    found.push('opencode')
-  }
-  return found.length === 1 ? found[0]! : null
+  if (existsSync(path.join(cwd, '.codex'))) found.push('codex')
+  if (existsSync(path.join(cwd, '.cursor'))) found.push('cursor')
+  if (existsSync(path.join(cwd, '.opencode'))) found.push('opencode')
+  return found
+}
+
+/** Harnesses installed anywhere on this machine — a much weaker signal. */
+function globalHarnessEvidence(): Harness[] {
+  const home = os.homedir()
+  const found: Harness[] = []
+  if (existsSync(path.join(home, '.claude'))) found.push('claude-code')
+  if (existsSync(path.join(home, '.codex'))) found.push('codex')
+  if (existsSync(path.join(home, '.cursor'))) found.push('cursor')
+  if (existsSync(path.join(home, '.config', 'opencode'))) found.push('opencode')
+  return found
+}
+
+/**
+ * Which harness to wire in this directory, or null when it is genuinely
+ * unclear.
+ *
+ * Project evidence decides, and machine evidence is consulted only when the
+ * project offers none. The two were previously OR-ed together per harness,
+ * which meant a developer with several agent tools installed could never get
+ * a detection at all: every `~/.<tool>` directory contributed a candidate, the
+ * "exactly one" test never passed, and the answer was null in every repository
+ * on the machine. Verified on a machine carrying all four — `notifai init
+ * --hooks` failed in five separate projects, each of which plainly used Claude
+ * Code.
+ *
+ * Having a tool installed says nothing about which one *this* project is
+ * worked in. Ambiguity within the project is still ambiguity, and returns
+ * null so the caller can ask rather than guess.
+ */
+export function detectHarness(cwd: string): Harness | null {
+  const local = localHarnessEvidence(cwd)
+  if (local.length > 0) return local.length === 1 ? local[0]! : null
+  const global = globalHarnessEvidence()
+  return global.length === 1 ? global[0]! : null
 }
 
 interface SettingsDocument {

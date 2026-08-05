@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { readFileSync } from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { Command } from 'commander'
 import {
   askCommand,
@@ -62,9 +64,30 @@ async function readStdin(timeoutMs = 2000, maxBytes = 1_000_000): Promise<string
   })
 }
 
+/**
+ * One source of truth for the version: the manifest npm actually published.
+ *
+ * It was hardcoded here as well, and the first patch release proved why that
+ * does not hold — `package.json` moved and `notifai --version` kept reporting
+ * the old number, which is exactly the string someone pastes into a bug report
+ * to say what they are running.
+ */
+function version(): string {
+  try {
+    const manifest = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'package.json')
+    const parsed: unknown = JSON.parse(readFileSync(manifest, 'utf8'))
+    if (typeof parsed === 'object' && parsed !== null && typeof (parsed as { version?: unknown }).version === 'string') {
+      return (parsed as { version: string }).version
+    }
+  } catch {
+    // Fall through: an unreadable manifest must not stop the CLI running.
+  }
+  return 'unknown'
+}
+
 const program = new Command('notifai')
   .description('Send native device notifications from agents and local programs')
-  .version('0.1.0')
+  .version(version())
 
 program
   .command('login')

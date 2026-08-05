@@ -22,6 +22,7 @@ import {
 import {
   HARNESSES,
   applyPlan,
+  detectHarness,
   buildHookConfig,
   codexLayerDir,
   codexProjectRoot,
@@ -496,5 +497,81 @@ describe('the OpenCode adapter', () => {
     // Ours, but with the constants edited beyond recognition: no answer beats
     // a wrong one, since the caller compares these for equality.
     expect(opencodePluginTarget(`${OPENCODE_PLUGIN_MARKER}\nconst EXEC = whatever\n`)).toBeNull()
+  })
+})
+
+describe('detectHarness', () => {
+  function project(...entries: string[]): string {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'notifai-detect-'))
+    for (const entry of entries) {
+      if (entry.endsWith('.md')) writeFileSync(path.join(dir, entry), '# project\n')
+      else mkdirSync(path.join(dir, entry), { recursive: true })
+    }
+    return dir
+  }
+
+  it('detects Claude Code from a project .claude directory', () => {
+    expect(detectHarness(project('.claude'))).toBe('claude-code')
+  })
+
+  it('detects Claude Code from CLAUDE.md alone', () => {
+    // A repository worked in daily through Claude Code may never accumulate a
+    // .claude/ directory; its project file is the only marker there is.
+    expect(detectHarness(project('CLAUDE.md'))).toBe('claude-code')
+  })
+
+  it('detects Claude Code from .claude and CLAUDE.md together without double-counting', () => {
+    expect(detectHarness(project('.claude', 'CLAUDE.md'))).toBe('claude-code')
+  })
+
+  it('does not infer a harness from AGENTS.md', () => {
+    // AGENTS.md began as a Codex convention and is now read by most agent
+    // tooling, Claude Code included. Naming a harness from it would be a guess
+    // wearing detection's clothes. With no other project evidence this falls
+    // through to machine evidence, which on a multi-tool machine is ambiguous.
+    const dir = project('AGENTS.md')
+    const answer = detectHarness(dir)
+    expect(answer).not.toBe('codex')
+    expect(HARNESSES.includes(answer as never) || answer === null).toBe(true)
+  })
+
+  it('pairs AGENTS.md with CLAUDE.md as Claude Code, not Codex', () => {
+    // The shape this very repository has, and four of the five projects the
+    // release was verified in.
+    expect(detectHarness(project('CLAUDE.md', 'AGENTS.md'))).toBe('claude-code')
+  })
+
+  it('detects each harness from its own project directory', () => {
+    expect(detectHarness(project('.codex'))).toBe('codex')
+    expect(detectHarness(project('.cursor'))).toBe('cursor')
+    expect(detectHarness(project('.opencode'))).toBe('opencode')
+  })
+
+  it('returns null when the project itself names two harnesses', () => {
+    // Genuine ambiguity, and the caller must ask rather than pick. Not the
+    // same as having no evidence.
+    expect(detectHarness(project('.claude', '.codex'))).toBeNull()
+  })
+
+  it('prefers project evidence over anything installed on the machine', () => {
+    // The regression. Machine-global markers used to be OR-ed in per harness,
+    // so a developer with several agent tools installed got a candidate for
+    // every one of them, the "exactly one" test never passed, and detection
+    // returned null in every repository on that machine — including ones whose
+    // own contents named a single harness unambiguously.
+    //
+    // This asserts the ordering rather than the machine state, so it holds on
+    // a CI box with a bare home directory and on a developer laptop carrying
+    // all four.
+    expect(detectHarness(project('.cursor'))).toBe('cursor')
+    expect(detectHarness(project('CLAUDE.md'))).toBe('claude-code')
+  })
+
+  it('falls back to machine evidence only when the project offers none', () => {
+    const empty = mkdtempSync(path.join(os.tmpdir(), 'notifai-detect-empty-'))
+    // Whatever this machine has, an empty project must never crash and must
+    // return either a single harness or null — never an arbitrary pick.
+    const answer = detectHarness(empty)
+    expect(answer === null || HARNESSES.includes(answer)).toBe(true)
   })
 })
