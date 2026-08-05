@@ -1524,6 +1524,10 @@ async function closeGap(deps: CommandDeps, state: ReadinessState, flags: InitFla
 
 /** Whether an optional gap should be closed, given flags and who is watching. */
 function wantsOptional(deps: CommandDeps, state: ReadinessState, flags: InitFlags): Promise<boolean> {
+  // Naming the project is init's whole reason to touch the filesystem, costs
+  // nothing, and is undone by editing one line — so it is done rather than
+  // asked about, for a human and an agent alike.
+  if (state.id === 'project') return Promise.resolve(true)
   const explicit = state.id === 'hooks' ? flags.hooks : state.id === 'skill' ? flags.skills : undefined
   if (explicit !== undefined) return Promise.resolve(explicit)
   // An agent is never asked, and never assumed into a change it did not
@@ -1685,9 +1689,16 @@ export async function assessReadiness(deps: CommandDeps): Promise<Readiness> {
       : {
           id: 'project',
           title: 'Project identity',
-          status: 'gap',
-          detail: `no project set in ${configPath}`,
-          remedy: { by: 'cli', summary: 'name this project after its directory' },
+          // Not a blocker: a send without a project simply carries no project
+          // identity. init always sets one because it is free and reversible,
+          // but an unlabelled setup works, so this must not go red.
+          status: 'optional-gap',
+          detail: `not set in ${configPath} — sends from here carry no project identity`,
+          remedy: {
+            by: 'cli',
+            summary: 'name this project after its directory',
+            command: 'notifai init',
+          },
         },
   )
 
