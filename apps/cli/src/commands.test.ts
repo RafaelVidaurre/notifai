@@ -1063,7 +1063,7 @@ describe('init', () => {
   })
 
   it('pins the skill installer to the tagged public release syntax', () => {
-    expect(SKILLS_SOURCE).toBe('RafaelVidaurre/notifai#v0.1.3')
+    expect(SKILLS_SOURCE).toBe('RafaelVidaurre/notifai#v0.1.4')
     expect(SKILLS_SOURCE).not.toContain('@v')
   })
 
