@@ -555,7 +555,7 @@ describe('Cursor hook commands', () => {
     await doctorCommand(deps, {})
 
     expect(io.outLines).toContain(
-      `ok    hooks: cursor project (${path.join(cwd, '.cursor', 'hooks.json')})`,
+      `ok    Question routing: cursor project (${path.join(cwd, '.cursor', 'hooks.json')})`,
     )
     expect(io.outLines.some((line) => line.includes('Cursor: send one prompt'))).toBe(true)
   })
@@ -822,8 +822,8 @@ describe('interactive command UX', () => {
 
     expect(await doctorCommand(deps, {})).toBe(EXIT.failed)
     expect(io.intros).toEqual(['NotifAI doctor'])
-    expect(io.checks.some((check) => !check.ok && check.message.startsWith('credential:'))).toBe(true)
-    expect(io.checks.some((check) => check.ok && check.message.startsWith('contract:'))).toBe(true)
+    expect(io.checks.some((check) => !check.ok && check.message.startsWith('This machine:'))).toBe(true)
+    expect(io.checks.some((check) => check.ok && check.message.startsWith('Protocol version:'))).toBe(true)
     expect(io.outLines).toEqual([])
   })
 
@@ -848,7 +848,7 @@ describe('interactive command UX', () => {
 
     await doctorCommand(deps, { json: true })
     expect(io.outLines).toHaveLength(1)
-    expect(JSON.parse(io.outLines[0] ?? '{}')).toHaveProperty('checks')
+    expect(JSON.parse(io.outLines[0] ?? '{}')).toHaveProperty('states')
     expect(io.intros).toEqual([])
     expect(io.checks).toEqual([])
   })
@@ -865,13 +865,38 @@ describe('init', () => {
     expect(readFileSync(configPath, 'utf8')).toContain('project = "my-project-')
     // Safe by default: without an explicit --skills opt-in, init only writes
     // configuration and never spawns the skill installer.
-    expect(io.outLines.join('\n')).toContain('Agent skill not installed (optional)')
-    expect(io.outLines.join('\n')).toContain('verify device readiness: notifai doctor')
+    expect(io.outLines.join('\n')).toContain('no published skill source configured')
     expect(io.outLines.join('\n')).not.toContain('All set.')
 
     io.outLines = []
     expect(await initCommand(deps, { skills: false })).toBe(EXIT.ok)
-    expect(io.outLines.join('\n')).toContain('already configured')
+    // Idempotent: the second run re-derives the same slug and says so as a
+    // settled state rather than repeating the write.
+    expect(io.outLines.join('\n')).toContain('Project identity: "my-project-')
+    expect(readFileSync(configPath, 'utf8')).toContain('project = "my-project-')
+  })
+
+  it('surfaces one next step, not the whole remaining list', async () => {
+    // The behavioural core of the design: someone handed five things to do
+    // does none of them. Signing in gates the device check, so naming both
+    // would send the reader to fix something not yet known to be wrong.
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-one-step-'))
+    const io = new CapturedIo()
+    const deps: CommandDeps = {
+      ...makeDeps(io, { health: async () => true } as unknown as ApiClient),
+      cwd,
+      env: { XDG_CONFIG_HOME: cwd, XDG_STATE_HOME: cwd },
+      store: { load: () => null, save: () => {}, clear: () => {}, describe: () => 'empty store' },
+    }
+
+    expect(await initCommand(deps, {})).toBe(EXIT.ok)
+    const out = io.outLines.join('\n')
+    expect(out).toContain('Next: This machine')
+    expect(out).toContain('notifai login')
+    // The device gap is real and downstream; it must stay hidden until the
+    // sign-in that would let anyone actually check it has happened.
+    expect(out).not.toContain('companion app')
+    expect(out.match(/^Next:/gm)).toHaveLength(1)
   })
 
   it('honors an explicit --project-id', async () => {
@@ -895,8 +920,9 @@ describe('init', () => {
     const out = io.outLines.join('\n')
     expect(out).toContain('no published skill source configured')
     expect(out).not.toContain('notifai init --skills')
-    expect(out).toContain('notifai hooks install')
     expect(out).not.toContain('Installing the notifai agent skill')
+    // Never prompted, and never assumed into a change it did not request.
+    expect(io.errLines).toEqual([])
   })
 
   it('fails explicitly when --skills requests the unpublished source', async () => {
@@ -920,7 +946,7 @@ describe('init', () => {
     }
 
     expect(await initCommand(deps, {})).toBe(EXIT.ok)
-    expect(io.outLines.join('\n')).toContain('sign in: notifai login')
+    expect(io.outLines.join('\n')).toContain('notifai login')
   })
 
   it('offers a present human the sign-in and respects a refusal', async () => {
@@ -941,7 +967,8 @@ describe('init', () => {
 
     expect(await initCommand(deps, {})).toBe(EXIT.ok)
     expect(asked.some((q) => q.includes('Sign in'))).toBe(true)
-    expect(io.outLines.join('\n')).toContain('sign in: notifai login')
+    // Refused, so it stays the next step rather than being treated as done.
+    expect(io.outLines.join('\n')).toContain('notifai login')
   })
 })
 
@@ -1104,7 +1131,8 @@ describe('a server behind this CLI', () => {
     await doctorCommand(deps, {})
 
     const said = io.outLines.concat(io.errLines).join(' ')
-    expect(said).toMatch(/contract/)
+    // The label is the user's word for it; the detail is what must survive.
+    expect(said).toMatch(/Protocol version/)
     expect(said).toMatch(/needs deploying/)
   })
 

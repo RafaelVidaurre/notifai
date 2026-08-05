@@ -35,6 +35,7 @@ import {
   type FlagOverrides,
 } from './config.js'
 import type { CredentialStore, MachineCredential } from './credentials.js'
+import { firstBlocker, openItems, type Readiness, type ReadinessState } from './readiness.js'
 import {
   handleSessionEnd,
   handleStop,
@@ -1461,52 +1462,47 @@ export interface InitFlags {
  * whatever only the user can do (signing in, pairing a companion device) is printed as
  * the exact command to hand back to them.
  */
-export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<number> {
-  const interactive = deps.io.interactive === true
-  await deps.io.intro?.('NotifAI setup')
-  /** Steps only the user can perform, phrased as the command to run. */
-  const remaining: string[] = []
-  let failed = false
-
-  // -- Project identity ------------------------------------------------------
-  const configPath = path.join(deps.cwd, '.notifai', 'config.toml')
-  const existing = existsSync(configPath)
-    ? (parseToml(readFileSync(configPath, 'utf8')) as Record<string, unknown>)
-    : {}
-  const project = flags.projectId ?? (typeof existing['project'] === 'string' ? existing['project'] : null)
-  const slug = projectSlugFrom(project ?? path.basename(deps.cwd))
-  if (existing['project'] !== slug) {
-    existing['project'] = slug
+/**
+ * Close a gap the CLI is allowed to close on its own, without asking.
+ *
+ * Only reached for `by: 'cli'` remedies, which by definition need no human, so
+ * this stays silent about what it did — the re-assessment that follows reports
+ * the new state, and narrating both is how a setup log becomes unreadable.
+ *
+ * Returns false when the attempt failed, which is different from declining:
+ * a decline leaves an optional gap open and is fine, a failure is not.
+ */
+async function closeGap(deps: CommandDeps, state: ReadinessState, flags: InitFlags): Promise<boolean> {
+  if (state.id === 'project') {
+    const configPath = path.join(deps.cwd, '.notifai', 'config.toml')
+    const existing = existsSync(configPath)
+      ? (parseToml(readFileSync(configPath, 'utf8')) as Record<string, unknown>)
+      : {}
+    existing['project'] = projectSlugFrom(flags.projectId ?? path.basename(deps.cwd))
     mkdirSync(path.dirname(configPath), { recursive: true })
     writeFileSync(configPath, `${stringifyToml(existing)}\n`)
-    deps.io.out(`Wrote project = "${slug}" to ${configPath}`)
-  } else {
-    deps.io.out(`Project already configured as "${slug}" in ${configPath}`)
+    return true
   }
 
-  // -- Credential ------------------------------------------------------------
-  let credential = deps.store.load()
-  if (credential) {
-    deps.io.out(`Signed in as machine "${credential.machineName}" (${deps.store.describe()})`)
-  } else if (interactive && (await deps.io.confirm('Sign in now? (opens your browser)', true))) {
-    if ((await loginCommand(deps, {})) === EXIT.ok) credential = deps.store.load()
-    else remaining.push('sign in: notifai login')
-  } else {
-    remaining.push('sign in: notifai login')
+  if (state.id === 'hooks') {
+    let harness = detectHarness(deps.cwd)
+    if (harness === null && deps.io.interactive === true && deps.io.select) {
+      const picked = await deps.io.select(
+        'Which agent harness do you use here?',
+        HARNESSES.map((name) => ({ value: name, label: name })),
+      )
+      if (picked !== null) harness = picked as Harness
+    }
+    if (harness === null) {
+      deps.io.err(
+        `Could not tell which harness to wire. Run: notifai hooks install --harness <${HARNESSES.join('|')}>`,
+      )
+      return false
+    }
+    return hooksInstallCommand(deps, { harness }) === EXIT.ok
   }
 
-  // -- Agent guidance skill --------------------------------------------------
-  const wantSkill =
-    SKILLS_SOURCE !== '' &&
-    (flags.skills ??
-      (interactive
-        ? await deps.io.confirm('Install/update the agent guidance skill in this repo?', true)
-        : false))
-  if (SKILLS_SOURCE === '' && flags.skills === true) {
-    failed = true
-    deps.io.err('The optional agent skill is not published yet; this build has no skill source configured.')
-  }
-  if (wantSkill) {
+  if (state.id === 'skill') {
     deps.io.out(`Installing the notifai agent skill (npx skills add ${SKILLS_SOURCE})...`)
     const code = await new Promise<number>((resolve) => {
       const child = spawn('npx', ['-y', 'skills', 'add', SKILLS_SOURCE, '--skill', 'notifai'], {
@@ -1516,88 +1512,106 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
       child.on('error', () => resolve(1))
       child.on('exit', (exitCode) => resolve(exitCode ?? 1))
     })
-    if (code === 0) {
-      deps.io.out('Agent skill installed. Agents in this project can follow it.')
-    } else {
-      failed = true
+    if (code !== 0) {
       deps.io.err('Skill installation failed — run it manually with:')
       deps.io.err(`  npx skills add ${SKILLS_SOURCE} --skill notifai`)
     }
-  } else if (SKILLS_SOURCE === '' && flags.skills === undefined) {
-    deps.io.out(
-      'Agent skill not installed (optional): this build has no published skill source configured.',
-    )
-  } else if (flags.skills === undefined && !interactive) {
-    deps.io.out('Agent skill not installed (optional) — add it with: notifai init --skills')
+    return code === 0
   }
 
-  // -- Harness hooks ---------------------------------------------------------
-  const installations = findInstallations(deps.cwd, deps.env)
-  if (installations.length > 0) {
-    deps.io.out(
-      `Hooks installed: ${installations
-        .map((i) => `${i.harness} ${i.global ? 'global' : 'project'}`)
-        .join(', ')}`,
-    )
-  } else {
-    const wantHooks =
-      flags.hooks ??
-      (interactive
-        ? await deps.io.confirm(
-            'Install harness hooks, so questions reach your devices when you are away?',
-            true,
-          )
-        : false)
-    if (wantHooks) {
-      let harness = detectHarness(deps.cwd)
-      if (harness === null && interactive && deps.io.select) {
-        const picked = await deps.io.select(
-          'Which agent harness do you use here?',
-          HARNESSES.map((name) => ({ value: name, label: name })),
-        )
-        if (picked !== null) harness = picked as Harness
-      }
-      if (harness === null) {
-        failed = true
-        deps.io.err(
-          `Could not tell which harness to wire. Run: notifai hooks install --harness <${HARNESSES.join('|')}>`,
-        )
-      } else if (hooksInstallCommand(deps, { harness }) !== EXIT.ok) {
-        failed = true
-      }
-    } else if (flags.hooks === undefined && !interactive) {
-      deps.io.out('Hooks not installed (optional) — add question routing with: notifai hooks install')
+  return false
+}
+
+/** Whether an optional gap should be closed, given flags and who is watching. */
+function wantsOptional(deps: CommandDeps, state: ReadinessState, flags: InitFlags): Promise<boolean> {
+  const explicit = state.id === 'hooks' ? flags.hooks : state.id === 'skill' ? flags.skills : undefined
+  if (explicit !== undefined) return Promise.resolve(explicit)
+  // An agent is never asked, and never assumed into a change it did not
+  // request: silence means no, and the summary says what was skipped.
+  if (deps.io.interactive !== true) return Promise.resolve(false)
+  const question =
+    state.id === 'hooks'
+      ? 'Install harness hooks, so questions reach your devices when you are away?'
+      : 'Install/update the agent guidance skill in this repo?'
+  return deps.io.confirm(question, true)
+}
+
+/**
+ * Setup as one step at a time.
+ *
+ * The old version ran five steps in a fixed order and ended with a list of
+ * everything still outstanding. That is a report, and a report is the wrong
+ * output here: someone handed five things to do does none of them, and the
+ * order was the script's rather than the dependency graph's — it offered to
+ * install hooks after a sign-in that had just failed.
+ *
+ * So this closes what it can, then surfaces exactly one thing, the first that
+ * stands in the way. Re-running advances by one. Idempotence stops being a
+ * property to preserve and becomes the mechanism: every decision is derived
+ * from observed state, so a partial run, a second project, a fresh worktree
+ * and a revoked credential are the same code path arriving at different
+ * states rather than four branches to enumerate.
+ */
+export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<number> {
+  await deps.io.intro?.('NotifAI setup')
+
+  if (SKILLS_SOURCE === '' && flags.skills === true) {
+    deps.io.err('The optional agent skill is not published yet; this build has no skill source configured.')
+    return EXIT.failed
+  }
+
+  let readiness = await assessReadiness(deps)
+  let failed = false
+
+  // One pass is enough: closing a gap never opens an earlier one, and the
+  // states that remain are exactly those needing someone who is not the CLI.
+  for (const state of readiness.states) {
+    const remedy = state.remedy
+    if (remedy === undefined) continue
+
+    // Its to launch, theirs to complete. Offering to start the sign-in is the
+    // single most useful thing this command does for a person, so it is worth
+    // the extra branch — but only when someone is actually watching, since an
+    // agent that reached a browser prompt would simply hang.
+    if (remedy.by === 'user-here' && remedy.interactive === true) {
+      if (state.status !== 'gap' || deps.io.interactive !== true) continue
+      if (!(await deps.io.confirm('Sign in now? (opens your browser)', true))) continue
+      if ((await loginCommand(deps, {})) !== EXIT.ok) failed = true
+      continue
+    }
+
+    if (remedy.by !== 'cli') continue
+    if (state.status === 'gap') {
+      if (!(await closeGap(deps, state, flags))) failed = true
+    } else if (state.status === 'optional-gap' && (await wantsOptional(deps, state, flags))) {
+      if (!(await closeGap(deps, state, flags))) failed = true
     }
   }
 
-  // -- Devices, when we can ask the server -----------------------------------
-  if (credential) {
-    try {
-      const config = loadConfig({ cwd: deps.cwd, env: deps.env })
-      const authed = authedClient(deps, config)
-      if (authed) {
-        const { devices } = await authed.client.listDevices()
-        const ready = devices.filter((d) => d.registration_healthy)
-        if (ready.length > 0) {
-          deps.io.out(`${ready.length} device(s) ready to receive notifications`)
-        } else {
-          remaining.push('pair a device: install a companion app, sign in, allow notifications')
-        }
-      }
-    } catch {
-      deps.io.out('Could not reach the server to check devices — `notifai doctor` when back online.')
-      remaining.push('verify device readiness: notifai doctor')
-    }
+  readiness = await assessReadiness(deps)
+  for (const state of readiness.states.filter((s) => s.status === 'ready')) {
+    deps.io.out(`${state.title}: ${state.detail}`)
   }
 
-  // -- Verdict ---------------------------------------------------------------
-  if (remaining.length === 0 && !failed) {
+  const blocker = firstBlocker(readiness)
+  if (blocker === null) {
+    const skipped = openItems(readiness)
+    for (const state of skipped) deps.io.out(`Optional, not set up — ${remedyLine(state)}`)
     deps.io.out('All set. Agents in this project can notify you and ask questions.')
     await deps.io.outro?.('All set ✨')
-  } else {
-    for (const step of remaining) deps.io.out(`Still needed — ${step}`)
-    await deps.io.outro?.('Some steps remain (listed above)')
+    return failed ? EXIT.failed : EXIT.ok
   }
+
+  // Exactly one. Everything else waits until this is done, because the next
+  // gap is frequently a consequence of this one and naming it now would send
+  // the reader off to fix something that is not actually wrong.
+  deps.io.out('')
+  deps.io.out(`Next: ${blocker.title} — ${blocker.detail}`)
+  deps.io.out(`  ${remedyLine(blocker)}`)
+  if (blocker.remedy?.by === 'user-elsewhere') {
+    deps.io.out('  Then re-run `notifai init` and it will pick up from here.')
+  }
+  await deps.io.outro?.('One step remains (above)')
   return failed ? EXIT.failed : EXIT.ok
 }
 
@@ -1645,66 +1659,243 @@ async function contractCheck(client: ApiClient): Promise<{ name: string; ok: boo
   }
 }
 
-export async function doctorCommand(deps: CommandDeps, flags: { json?: boolean }): Promise<number> {
+/**
+ * Read the whole setup once, in dependency order.
+ *
+ * Descent stops where a prerequisite is missing: without a credential there is
+ * nothing to ask the server with, and without a reachable server a contract
+ * mismatch is unknowable rather than absent. Those downstream states report
+ * `unknown`, which is the honest answer and keeps a network outage from
+ * looking like a broken install.
+ */
+export async function assessReadiness(deps: CommandDeps): Promise<Readiness> {
   const config = loadConfig({ cwd: deps.cwd, env: deps.env })
-  const checks: { name: string; ok: boolean; detail: string }[] = []
+  const states: ReadinessState[] = []
+
+  const configPath = path.join(deps.cwd, '.notifai', 'config.toml')
+  const projectSlug = config.project.value
+  states.push(
+    projectSlug !== null
+      ? {
+          id: 'project',
+          title: 'Project identity',
+          status: 'ready',
+          detail: `"${projectSlug}" (${config.project.source})`,
+        }
+      : {
+          id: 'project',
+          title: 'Project identity',
+          status: 'gap',
+          detail: `no project set in ${configPath}`,
+          remedy: { by: 'cli', summary: 'name this project after its directory' },
+        },
+  )
 
   const credential = deps.store.load()
-  checks.push({
-    name: 'credential',
-    ok: credential !== null,
-    detail: credential ? `stored in ${deps.store.describe()}` : 'missing — run `notifai login`',
-  })
+  states.push(
+    credential
+      ? {
+          id: 'credential',
+          title: 'This machine',
+          status: 'ready',
+          detail: `paired as "${credential.machineName}" (${deps.store.describe()})`,
+        }
+      : {
+          id: 'credential',
+          title: 'This machine',
+          status: 'gap',
+          detail: 'not paired with your account',
+          remedy: {
+            by: 'user-here',
+            summary: 'sign in — this opens your browser to approve the machine',
+            command: 'notifai login',
+            interactive: true,
+          },
+        },
+  )
 
   const baseUrl = resolvedBaseUrl(config, credential)
-  checks.push({ name: 'config', ok: true, detail: `server ${baseUrl} (${config.base_url.source})` })
-
   const anon = makeClient(deps, baseUrl, null)
-  const reachable = await anon.health()
-  checks.push({
-    name: 'server',
-    ok: reachable,
-    detail: reachable ? 'reachable' : `cannot reach ${baseUrl}`,
-  })
+  // A probe that throws is unreachable, not a crash: this runs against a
+  // half-configured machine by definition, which is where a client that
+  // cannot even be constructed properly shows up.
+  let reachable = false
+  try {
+    reachable = await anon.health()
+  } catch {
+    reachable = false
+  }
+  states.push(
+    reachable
+      ? { id: 'server', title: 'Service', status: 'ready', detail: `${baseUrl} reachable` }
+      : {
+          id: 'server',
+          title: 'Service',
+          status: 'gap',
+          detail: `cannot reach ${baseUrl} (${config.base_url.source})`,
+          remedy: {
+            by: 'user-here',
+            summary: 'check your network, or the base_url shown above',
+            command: 'notifai doctor',
+          },
+        },
+  )
 
-  if (reachable) checks.push(await contractCheck(anon))
+  if (!reachable) {
+    states.push({
+      id: 'contract',
+      title: 'Protocol version',
+      status: 'unknown',
+      detail: 'not checked — the server is unreachable',
+    })
+  } else {
+    const contract = await contractCheck(anon)
+    states.push(
+      contract.ok
+        ? { id: 'contract', title: 'Protocol version', status: 'ready', detail: contract.detail }
+        : {
+            id: 'contract',
+            title: 'Protocol version',
+            status: 'gap',
+            detail: contract.detail,
+            remedy: {
+              by: 'user-here',
+              summary: 'the CLI and server disagree; the detail above says which to move',
+              command: 'notifai doctor',
+            },
+          },
+    )
+  }
 
-  if (credential && reachable) {
+  if (!credential || !reachable) {
+    const why = !credential ? 'this machine is not paired' : 'the server is unreachable'
+    states.push({ id: 'auth', title: 'Account', status: 'unknown', detail: `not checked — ${why}` })
+    states.push({ id: 'devices', title: 'Your devices', status: 'unknown', detail: `not checked — ${why}` })
+  } else {
     const client = makeClient(deps, baseUrl, `Bearer nfm_${credential.machineId}.${credential.secret}`)
     try {
-      const devices = await client.listDevices()
-      const ready = devices.devices.filter((d) => d.registration_healthy)
-      checks.push({ name: 'auth', ok: true, detail: `machine ${credential.machineId} accepted` })
-      checks.push({
-        name: 'devices',
-        ok: ready.length > 0,
-        detail:
-          ready.length > 0
-            ? `${ready.length} device(s) ready`
-            : 'no device ready — install a companion app, sign in, allow notifications',
+      const { devices } = await client.listDevices()
+      const ready = devices.filter((d) => d.registration_healthy)
+      states.push({
+        id: 'auth',
+        title: 'Account',
+        status: 'ready',
+        detail: `machine ${credential.machineId} accepted`,
       })
+      states.push(
+        ready.length > 0
+          ? {
+              id: 'devices',
+              title: 'Your devices',
+              status: 'ready',
+              detail: `${ready.map((d) => d.display_name).join(', ')} ready to receive`,
+            }
+          : {
+              id: 'devices',
+              title: 'Your devices',
+              status: 'gap',
+              // The one gap that cannot be closed from this terminal, and the
+              // likeliest place a first setup is abandoned. Naming which of
+              // the three sub-states it is matters: "install the app" is
+              // useless advice to someone who installed it and denied the
+              // permission prompt.
+              detail:
+                devices.length === 0
+                  ? 'nothing registered yet'
+                  : `${devices.map((d) => `${d.display_name} (${d.permission_status})`).join(', ')} — registered but not able to receive`,
+              remedy: {
+                by: 'user-elsewhere',
+                summary:
+                  devices.length === 0
+                    ? 'install the companion app on your phone, sign in with the same account, and allow notifications'
+                    : 'allow notifications for NotifAI in that device’s system settings',
+              },
+            },
+      )
     } catch (err) {
-      checks.push({
-        name: 'auth',
-        ok: false,
+      // A credential the server rejects is revocation, not absence, and the
+      // remedy is the same sign-in either way.
+      states.push({
+        id: 'auth',
+        title: 'Account',
+        status: 'gap',
         detail: err instanceof ApiCallError ? `${err.code}: ${err.message}` : String(err),
+        remedy: {
+          by: 'user-here',
+          summary: 'this machine is no longer recognised; pair it again',
+          command: 'notifai login',
+        },
       })
+      states.push({ id: 'devices', title: 'Your devices', status: 'unknown', detail: 'not checked — sign-in failed' })
     }
   }
 
-  checks.push(...hookChecks(deps))
+  states.push(...hookStates(deps))
 
-  const allOk = checks.every((c) => c.ok)
+  states.push(
+    SKILLS_SOURCE === ''
+      ? {
+          id: 'skill',
+          title: 'Agent guidance skill',
+          // Nothing outstanding, because nothing can be done: this build has
+          // no published skill source configured. Silence here would read as
+          // an omission to anyone who had seen it mentioned in the docs.
+          status: 'ready',
+          detail: 'not applicable — this build has no published skill source configured',
+        }
+      : {
+          id: 'skill',
+          title: 'Agent guidance skill',
+          status: 'optional-gap',
+          detail: 'not installed in this project',
+          remedy: {
+            by: 'cli',
+            summary: 'install the skill agents follow when deciding to notify',
+            command: 'notifai init --skills',
+          },
+        },
+  )
+
+  return { states }
+}
+
+export async function doctorCommand(deps: CommandDeps, flags: { json?: boolean }): Promise<number> {
+  const readiness = await assessReadiness(deps)
+  const blocker = firstBlocker(readiness)
+  const ok = blocker === null
+
   if (flags.json) {
-    deps.io.out(JSON.stringify({ ok: allOk, checks }, null, 2))
-  } else if (deps.io.interactive === true && deps.io.check) {
-    await deps.io.intro?.('NotifAI doctor')
-    for (const c of checks) await deps.io.check(c.ok, `${c.name}: ${c.detail}`)
-    await deps.io.outro?.(allOk ? 'Everything looks good' : 'Some checks need attention')
-  } else {
-    for (const c of checks) deps.io.out(`${c.ok ? 'ok  ' : 'FAIL'}  ${c.name}: ${c.detail}`)
+    deps.io.out(JSON.stringify({ ok, states: readiness.states }, null, 2))
+    return ok ? EXIT.ok : EXIT.failed
   }
-  return allOk ? EXIT.ok : EXIT.failed
+
+  const line = (s: ReadinessState) => `${s.title}: ${s.detail}`
+  // Doctor reports everything — that is the difference from init, which acts
+  // on one thing. It still names where to start, because a list of five
+  // problems in dependency order has an obvious first move and saying so
+  // costs nothing.
+  if (deps.io.interactive === true && deps.io.check) {
+    await deps.io.intro?.('NotifAI doctor')
+    for (const s of readiness.states) await deps.io.check(s.status !== 'gap', line(s))
+    await deps.io.outro?.(ok ? 'Everything looks good' : `Start with: ${remedyLine(blocker)}`)
+  } else {
+    for (const s of readiness.states) {
+      const mark = s.status === 'gap' ? 'FAIL' : s.status === 'unknown' ? '  ? ' : 'ok  '
+      deps.io.out(`${mark}  ${line(s)}`)
+    }
+    if (!ok) deps.io.out(`\nStart with: ${remedyLine(blocker)}`)
+  }
+  return ok ? EXIT.ok : EXIT.failed
+}
+
+/** One line telling the reader what to actually do about a state. */
+function remedyLine(state: ReadinessState): string {
+  const remedy = state.remedy
+  if (!remedy) return state.detail
+  if (remedy.by === 'user-elsewhere') return remedy.summary
+  return remedy.command === undefined
+    ? remedy.summary
+    : `${remedy.summary} — run \`${remedy.command}\``
 }
 
 /**
@@ -1716,6 +1907,57 @@ export async function doctorCommand(deps: CommandDeps, flags: { json?: boolean }
  * and watching nothing happen: hooks not installed, installed but never fired,
  * or left behind by an older build that named events this one does not serve.
  */
+/**
+ * Hook diagnostics as readiness states.
+ *
+ * A thin adapter over `hookChecks`, whose every branch was found the expensive
+ * way and is not worth re-deriving. The judgment added here is which failures
+ * actually stand in the way.
+ *
+ * Two do not. A hook that has never fired is the normal condition of an
+ * install thirty seconds old, and OpenCode's inability to resume an idle turn
+ * is a property of that harness rather than a fault in this setup. Treating
+ * either as blocking would mean `init` could never finish for an OpenCode
+ * user, or could only finish after a session had already run — so both report
+ * as things worth knowing rather than things to fix.
+ */
+function hookStates(deps: CommandDeps): ReadinessState[] {
+  const installations = findInstallations(deps.cwd, deps.env)
+  if (installations.length === 0) {
+    return [
+      {
+        id: 'hooks',
+        title: 'Question routing',
+        status: 'optional-gap',
+        detail: 'hooks not installed, so questions stay in the terminal',
+        remedy: {
+          by: 'cli',
+          summary: 'install harness hooks so questions reach your devices when you are away',
+          command: 'notifai hooks install',
+        },
+      },
+    ]
+  }
+
+  /** Real but not in the way; see the note above. */
+  const informational = new Set(['hooks (fired)', 'hooks (opencode continuation)'])
+  return hookChecks(deps).map((check) => ({
+    id: check.name.replace(/[ ()]+/g, '-').replace(/-$/, ''),
+    title: check.name === 'hooks' ? 'Question routing' : check.name,
+    status: check.ok ? 'ready' : informational.has(check.name) ? 'optional-gap' : 'gap',
+    detail: check.detail,
+    ...(check.ok
+      ? {}
+      : {
+          remedy: {
+            by: 'user-here' as const,
+            summary: 'the detail above names what to change',
+            command: 'notifai hooks install',
+          },
+        }),
+  }))
+}
+
 function hookChecks(deps: CommandDeps): { name: string; ok: boolean; detail: string }[] {
   const checks: { name: string; ok: boolean; detail: string }[] = []
   const installations = findInstallations(deps.cwd, deps.env)
