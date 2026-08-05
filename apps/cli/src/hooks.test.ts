@@ -523,6 +523,37 @@ describe('superseding a live question', () => {
     expect(readSessionState('sup2', h.env).retiring).toEqual([])
   })
 
+  it('keeps the original delivery targets when routing changes before retirement', async () => {
+    const h = harness([])
+    writeSessionState('sup-targets', h.env, { last_prompt_at: AWAY })
+    registerQuestion('sup-targets', h.env, { question: 'Ship it?' })
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'sup-targets' }))
+
+    const live = readSessionState('sup-targets', h.env).pending
+    expect(live).toMatchObject({
+      request_id: 'req_hook_1',
+      device_ids: ['dev_iphone', 'dev_mac'],
+    })
+
+    // The user changes their default routing before the agent supersedes the
+    // question. Retirement belongs to the Deliveries that actually carried the
+    // first question, not to whichever Device Installation is selected now.
+    const configDir = path.join(h.env['XDG_CONFIG_HOME'] as string, 'notifai')
+    mkdirSync(configDir, { recursive: true })
+    writeFileSync(path.join(configDir, 'config.toml'), 'devices = ["dev_iphone"]\n')
+    registerQuestion('sup-targets', h.env, { question: 'Deploy it?' })
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'sup-targets' }))
+
+    const retirement = h.recorder.submitted.find(
+      (submission) => submission.draft.event === 'question_retired',
+    )
+    expect(retirement?.draft.lifecycle?.retires_request_id).toBe('req_hook_1')
+    expect(retirement?.draft.targets).toEqual({
+      mode: 'selected',
+      device_ids: ['dev_iphone', 'dev_mac'],
+    })
+  })
+
   it('sweeps a queued retirement even on a turn continuing from an answer', async () => {
     // stop_hook_active short-circuits the escalation path, and a superseding
     // turn is very often exactly this turn.
@@ -641,7 +672,13 @@ describe('a question that outlives its session', () => {
     const h = harness([])
     orphanRetirements(
       h.env,
-      [{ request_id: 'req_old', collapse_key: 'ck_old', question: 'Old?', state: 'expired' }],
+      [{
+        request_id: 'req_old',
+        collapse_key: 'ck_old',
+        device_ids: ['dev_iphone'],
+        question: 'Old?',
+        state: 'expired',
+      }],
       undefined,
       NOW - 25 * 3600 * 1000,
     )
@@ -735,6 +772,23 @@ describe('ask registration', () => {
     expect(askCommand(h.deps, 'Ship it?', {})).toBe(EXIT.ok)
     expect(readSessionState('solo-session', h.env).pending?.question).toBe('Ship it?')
   })
+
+  it('fails explicitly instead of rerouting incomplete live state', () => {
+    const h = harness()
+    writeSessionState('incomplete', h.env, {
+      pending: {
+        question: 'Original?',
+        request_id: 'req_original',
+        collapse_key: 'collapse-original',
+      },
+    })
+
+    expect(askCommand(h.deps, 'Replacement?', { session: 'incomplete' })).toBe(EXIT.failed)
+    expect(h.io.errLines.join('\n')).toContain(
+      'refusing to retire it without request, collapse, and device identifiers',
+    )
+    expect(readSessionState('incomplete', h.env).pending?.question).toBe('Original?')
+  })
 })
 
 describe('user-prompt-submit hook', () => {
@@ -742,6 +796,59 @@ describe('user-prompt-submit hook', () => {
     const h = harness()
     await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: 's10' }))
     expect(readSessionState('s10', h.env).last_prompt_at).toBe(NOW)
+  })
+
+  it('preserves a delivered question through ask replacement and prompt transition', async () => {
+    const h = harness([], 900)
+    await hookRunCommand(
+      h.deps,
+      'user-prompt-submit',
+      stdin({ session_id: 'transition', cwd: h.deps.cwd }),
+    )
+    expect(askCommand(h.deps, 'Ship it?', { choice: ['Yes', 'No'] })).toBe(EXIT.ok)
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'transition', cwd: h.deps.cwd }))
+
+    const live = readSessionState('transition', h.env).pending
+    expect(live).toMatchObject({
+      question: 'Ship it?',
+      request_id: 'req_hook_1',
+      device_ids: ['dev_iphone', 'dev_mac'],
+    })
+    expect(live?.collapse_key).toMatch(/^notifai-hook-/)
+
+    // A second plain `ask` resolves through the project pointer and supersedes
+    // the live question. The next prompt then resets presence before another
+    // Stop can run — the transition that used to erase the retirement debt.
+    expect(askCommand(h.deps, 'Deploy it?', { choice: ['Staging', 'Production'] })).toBe(EXIT.ok)
+    expect(readSessionState('transition', h.env).retiring).toEqual([
+      {
+        request_id: live?.request_id,
+        collapse_key: live?.collapse_key,
+        device_ids: ['dev_iphone', 'dev_mac'],
+        question: 'Ship it?',
+        state: 'superseded',
+      },
+    ])
+
+    await hookRunCommand(
+      h.deps,
+      'user-prompt-submit',
+      stdin({ session_id: 'transition', cwd: h.deps.cwd }),
+    )
+
+    const retirement = h.recorder.submitted.find(
+      (submission) => submission.draft.event === 'question_retired',
+    )?.draft
+    expect(retirement?.delivery.collapse_key).toBe(live?.collapse_key)
+    expect(retirement?.lifecycle).toEqual({
+      tier: 'done',
+      state: 'superseded',
+      retires_request_id: live?.request_id,
+    })
+    expect(retirement?.targets).toEqual({
+      mode: 'selected',
+      device_ids: ['dev_iphone', 'dev_mac'],
+    })
   })
 
   it('retires a question a real timed-out Stop left live on the devices', async () => {
@@ -831,6 +938,24 @@ describe('session-end hook', () => {
     expect(code).toBe(EXIT.ok)
     expect(readSessionState('s12', h.env)).toEqual({})
     expect(h.recorder.closed).toEqual([])
+  })
+
+  it('preserves incomplete live state and reports why it cannot retire it', async () => {
+    const h = harness()
+    writeSessionState('s-incomplete', h.env, {
+      pending: {
+        question: 'Still live?',
+        request_id: 'req_incomplete',
+        collapse_key: 'collapse-incomplete',
+      },
+    })
+
+    await hookRunCommand(h.deps, 'session-end', stdin({ session_id: 's-incomplete' }))
+
+    expect(readSessionState('s-incomplete', h.env).pending?.request_id).toBe('req_incomplete')
+    expect(h.io.errLines.join('\n')).toContain(
+      'refusing to retire it without request, collapse, and device identifiers',
+    )
   })
 })
 

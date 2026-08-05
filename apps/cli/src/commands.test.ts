@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import type {
   CapabilityDocument,
+  EvidenceSnapshot,
   ListRepliesResponse,
   ReplyView,
   SubmissionReceipt,
@@ -21,10 +22,12 @@ import {
   hooksInstallCommand,
   hooksUninstallCommand,
   initCommand,
+  SKILLS_SOURCE,
   loginCommand,
   projectSlugFrom,
   repliesCommand,
   sendCommand,
+  statusCommand,
   type CommandDeps,
   type CommandIo,
   type CommandSpinner,
@@ -494,6 +497,80 @@ describe('command contracts', () => {
   })
 })
 
+describe('delivery evidence status', () => {
+  function snapshot(
+    companionReceipt: EvidenceSnapshot['deliveries'][number]['companion_receipt'],
+  ): EvidenceSnapshot {
+    return {
+      request_id: 'req_status_test',
+      event: 'tests_passed',
+      accepted_at: '2026-08-05T13:05:48.000Z',
+      overall: 'provider_accepted_all',
+      deliveries: [
+        {
+          delivery_id: 'del_status_test',
+          device_id: 'dev_status_test',
+          device_name: 'iPhone',
+          state: 'provider_accepted',
+          attempts: 1,
+          provider_status: 200,
+          provider_reason: null,
+          provider_id: 'provider_status_test',
+          updated_at: '2026-08-05T13:05:50.000Z',
+          companion_receipt: companionReceipt,
+          events: [
+            {
+              stage: 'attempt_started',
+              source: 'worker',
+              reason: null,
+              attempt: 1,
+              occurred_at: '2026-08-05T13:05:49.000Z',
+            },
+            {
+              stage: 'provider_accepted',
+              source: 'worker',
+              reason: null,
+              attempt: 1,
+              occurred_at: '2026-08-05T13:05:50.000Z',
+            },
+          ],
+        },
+      ],
+    }
+  }
+
+  it('calls an unobserved first-minute receipt unknown rather than failed', async () => {
+    const io = new CapturedIo()
+    const client = {
+      evidence: async () => snapshot({ state: 'unknown', observed_at: null, latency_ms: null }),
+    } as unknown as ApiClient
+
+    expect(await statusCommand(makeDeps(io, client), 'req_status_test', {})).toBe(EXIT.ok)
+    const said = io.outLines.join('\n')
+    expect(said).toContain('Provider Acceptance: accepted')
+    expect(said).toContain('Companion Receipt: unknown')
+    expect(said).toContain('not a failure')
+    expect(said).toContain('attempt_started')
+  })
+
+  it('reports the observed device receipt and measured provider-to-companion latency', async () => {
+    const io = new CapturedIo()
+    const client = {
+      evidence: async () =>
+        snapshot({
+          state: 'observed',
+          observed_at: '2026-08-05T13:17:17.000Z',
+          latency_ms: 687_000,
+        }),
+    } as unknown as ApiClient
+
+    expect(await statusCommand(makeDeps(io, client), 'req_status_test', {})).toBe(EXIT.ok)
+    const said = io.outLines.join('\n')
+    expect(said).toContain('Companion Receipt: observed')
+    expect(said).toContain('11m 27s after Provider Acceptance')
+  })
+})
+
 describe('Cursor hook commands', () => {
   const execPath = '/usr/local/bin/node'
   const scriptPath = '/opt/notifai/dist/main.js'
@@ -855,21 +932,83 @@ describe('interactive command UX', () => {
 })
 
 describe('init', () => {
+  const readyIphone = {
+    device_id: 'dev_iphone',
+    display_name: 'iPhone',
+    platform: 'ios' as const,
+    permission_status: 'authorized',
+    registration_healthy: true,
+    last_seen_at: '2026-08-05T18:00:00.000Z',
+  }
+
+  function setupEvidence(
+    requestId: string,
+    companionReceipt: EvidenceSnapshot['deliveries'][number]['companion_receipt'],
+    device = readyIphone,
+  ): EvidenceSnapshot {
+    return {
+      request_id: requestId,
+      event: 'setup_verified',
+      accepted_at: '2026-08-05T18:00:00.000Z',
+      overall: 'provider_accepted_all',
+      deliveries: [
+        {
+          delivery_id: 'del_setup',
+          device_id: device.device_id,
+          device_name: device.display_name,
+          state: 'provider_accepted',
+          attempts: 1,
+          provider_status: 200,
+          provider_reason: null,
+          provider_id: 'provider_setup',
+          updated_at: '2026-08-05T18:00:01.000Z',
+          companion_receipt: companionReceipt,
+          events:
+            companionReceipt.state === 'observed'
+              ? [
+                  {
+                    stage: 'companion_received',
+                    source: 'companion',
+                    reason: null,
+                    attempt: null,
+                    occurred_at: companionReceipt.observed_at!,
+                  },
+                ]
+              : [],
+        },
+      ],
+    }
+  }
+
+  function setupReceipt(requestId = 'req_setup'): SubmissionReceipt {
+    return {
+      ...receipt,
+      request_id: requestId,
+      deliveries: [
+        {
+          ...receipt.deliveries[0]!,
+          device_id: readyIphone.device_id,
+          device_name: readyIphone.display_name,
+        },
+      ],
+    }
+  }
+
   it('writes the project identifier into .notifai/config.toml and is idempotent', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'My Project-'))
     const io = new CapturedIo()
     const deps = { ...makeDeps(io, {} as ApiClient), cwd }
 
-    expect(await initCommand(deps, {})).toBe(EXIT.ok)
+    expect(await initCommand(deps, {})).toBe(EXIT.failed)
     const configPath = path.join(cwd, '.notifai', 'config.toml')
     expect(readFileSync(configPath, 'utf8')).toContain('project = "my-project-')
     // Safe by default: without an explicit --skills opt-in, init only writes
     // configuration and never spawns the skill installer.
-    expect(io.outLines.join('\n')).toContain('no published skill source configured')
+    expect(io.outLines.join('\n')).not.toContain('Installing the notifai agent skill')
     expect(io.outLines.join('\n')).not.toContain('All set.')
 
     io.outLines = []
-    expect(await initCommand(deps, { skills: false })).toBe(EXIT.ok)
+    expect(await initCommand(deps, { skills: false })).toBe(EXIT.failed)
     // Idempotent: the second run re-derives the same slug and says so as a
     // settled state rather than repeating the write.
     expect(io.outLines.join('\n')).toContain('Project identity: "my-project-')
@@ -889,7 +1028,7 @@ describe('init', () => {
       store: { load: () => null, save: () => {}, clear: () => {}, describe: () => 'empty store' },
     }
 
-    expect(await initCommand(deps, {})).toBe(EXIT.ok)
+    expect(await initCommand(deps, {})).toBe(EXIT.failed)
     const out = io.outLines.join('\n')
     expect(out).toContain('Next: This machine')
     expect(out).toContain('notifai login')
@@ -904,7 +1043,7 @@ describe('init', () => {
     const io = new CapturedIo()
     const deps = { ...makeDeps(io, {} as ApiClient), cwd }
 
-    expect(await initCommand(deps, { projectId: 'Custom Name', skills: false })).toBe(EXIT.ok)
+    expect(await initCommand(deps, { projectId: 'Custom Name', skills: false })).toBe(EXIT.failed)
     expect(readFileSync(path.join(cwd, '.notifai', 'config.toml'), 'utf8')).toContain(
       'project = "custom-name"',
     )
@@ -916,24 +1055,16 @@ describe('init', () => {
     const io = new CapturedIo()
     const deps = { ...makeDeps(io, {} as ApiClient), cwd }
 
-    expect(await initCommand(deps, {})).toBe(EXIT.ok)
+    expect(await initCommand(deps, {})).toBe(EXIT.failed)
     const out = io.outLines.join('\n')
-    expect(out).toContain('no published skill source configured')
-    expect(out).not.toContain('notifai init --skills')
     expect(out).not.toContain('Installing the notifai agent skill')
     // Never prompted, and never assumed into a change it did not request.
     expect(io.errLines).toEqual([])
   })
 
-  it('fails explicitly when --skills requests the unpublished source', async () => {
-    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-skills-unpublished-'))
-    const io = new CapturedIo()
-    const deps = { ...makeDeps(io, {} as ApiClient), cwd }
-
-    expect(await initCommand(deps, { skills: true })).toBe(EXIT.failed)
-    expect(io.errLines).toContain(
-      'The optional agent skill is not published yet; this build has no skill source configured.',
-    )
+  it('pins the skill installer to the tagged public release syntax', () => {
+    expect(SKILLS_SOURCE).toBe('RafaelVidaurre/notifai#v0.1.2')
+    expect(SKILLS_SOURCE).not.toContain('@v')
   })
 
   it('tells the user what only they can do when nothing is signed in', async () => {
@@ -945,7 +1076,7 @@ describe('init', () => {
       store: { load: () => null, save: () => {}, clear: () => {}, describe: () => 'empty store' },
     }
 
-    expect(await initCommand(deps, {})).toBe(EXIT.ok)
+    expect(await initCommand(deps, {})).toBe(EXIT.failed)
     expect(io.outLines.join('\n')).toContain('notifai login')
   })
 
@@ -969,6 +1100,299 @@ describe('init', () => {
     expect(asked.some((q) => q.includes('Sign in'))).toBe(true)
     // Refused, so it stays the next step rather than being treated as done.
     expect(io.outLines.join('\n')).toContain('notifai login')
+  })
+
+  it('never prompts or opens a browser when an agent runs it unattended', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-agent-no-input-'))
+    const io = new (class extends CapturedIo {
+      override async confirm(): Promise<boolean> {
+        throw new Error('an unattended init reached a prompt')
+      }
+
+      override openUrl(): void {
+        throw new Error('an unattended init opened a browser')
+      }
+    })()
+    const deps: CommandDeps = {
+      ...makeDeps(io, { health: async () => true } as unknown as ApiClient),
+      cwd,
+      env: { XDG_CONFIG_HOME: path.join(cwd, 'config'), XDG_STATE_HOME: path.join(cwd, 'state') },
+      store: { load: () => null, save: () => {}, clear: () => {}, describe: () => 'empty store' },
+    }
+
+    expect(await initCommand(deps, {})).toBe(EXIT.failed)
+    expect(io.outLines.join('\n')).toContain('Next: This machine')
+  })
+
+  it('makes the unavailable distribution bridge explicit when no app has registered', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-no-device-'))
+    const io = new CapturedIo()
+    const client = {
+      health: async () => true,
+      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+      listDevices: async () => ({ devices: [] }),
+    } as unknown as ApiClient
+    const deps = {
+      ...makeDeps(io, client),
+      cwd,
+      env: { XDG_CONFIG_HOME: path.join(cwd, 'config'), XDG_STATE_HOME: path.join(cwd, 'state') },
+    }
+
+    expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.failed)
+    const out = io.outLines.join('\n')
+    expect(out).toContain('Next: Your devices')
+    expect(out).toContain('no supported App Store/TestFlight URL')
+    expect(out).toContain('open it, sign in with the same account, and allow notifications')
+    expect(out.match(/^Next:/gm)).toHaveLength(1)
+  })
+
+  it.each([
+    ['denied', 'system settings'],
+    ['not_determined', 'allow its notification prompt'],
+  ])('gives one permission-specific next action for %s', async (permission, expected) => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), `init-permission-${permission}-`))
+    const io = new CapturedIo()
+    const client = {
+      health: async () => true,
+      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+      listDevices: async () => ({
+        devices: [{ ...readyIphone, permission_status: permission, registration_healthy: false }],
+      }),
+    } as unknown as ApiClient
+    const deps = {
+      ...makeDeps(io, client),
+      cwd,
+      env: { XDG_CONFIG_HOME: path.join(cwd, 'config'), XDG_STATE_HOME: path.join(cwd, 'state') },
+    }
+
+    expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.failed)
+    const out = io.outLines.join('\n')
+    expect(out).toContain(`iPhone (${permission})`)
+    expect(out).toContain(expected)
+    expect(out.match(/^Next:/gm)).toHaveLength(1)
+  })
+
+  it('waits on the supported device registry, then ends with an observed real receipt', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-device-bridge-'))
+    const io = new InteractiveIo()
+    let now = 0
+    let deviceReady = false
+    let submitCalls = 0
+    let submittedDraft: SubmitNotificationRequestT | null = null
+    const client = {
+      health: async () => true,
+      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+      listDevices: async () => ({ devices: deviceReady ? [readyIphone] : [] }),
+      submit: async (draft: SubmitNotificationRequestT) => {
+        submitCalls += 1
+        submittedDraft = draft
+        return setupReceipt()
+      },
+      evidence: async (requestId: string) =>
+        setupEvidence(requestId, {
+          state: 'observed',
+          observed_at: '2026-08-05T18:00:02.000Z',
+          latency_ms: 1_000,
+        }),
+    } as unknown as ApiClient
+    const deps: CommandDeps = {
+      ...makeDeps(io, client),
+      cwd,
+      env: { XDG_CONFIG_HOME: path.join(cwd, 'config'), XDG_STATE_HOME: path.join(cwd, 'state') },
+      now: () => now,
+      sleep: async (milliseconds) => {
+        now += milliseconds
+        deviceReady = true
+      },
+    }
+
+    expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.ok)
+    expect(io.prompts).toEqual(['Wait here while you finish that on your device?'])
+    expect(io.spinnerEvents).toContain('stop:iPhone is ready to receive')
+    expect(io.spinnerEvents).toContain('stop:Receipt observed from iPhone')
+    expect(io.outLines.join('\n')).toContain('Companion Receipt observed from iPhone')
+    expect(io.outLines.join('\n')).toContain('All set.')
+    expect(submitCalls).toBe(1)
+    expect(submittedDraft?.draft.event).toBe('setup_verified')
+    expect(submittedDraft?.draft.targets).toEqual({ mode: 'selected', device_ids: ['dev_iphone'] })
+
+    io.outLines = []
+    io.prompts = []
+    expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.ok)
+    expect(submitCalls).toBe(1)
+    expect(io.prompts).toEqual([])
+    expect(io.outLines.join('\n')).toContain('All set.')
+  })
+
+  it('persists a partial proof and checks the same request instead of sending again', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-proof-partial-'))
+    const io = new CapturedIo()
+    let now = 0
+    let submitCalls = 0
+    let savedRequestMissing = false
+    const client = {
+      health: async () => true,
+      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+      listDevices: async () => ({ devices: [readyIphone] }),
+      submit: async () => {
+        submitCalls += 1
+        return setupReceipt(submitCalls === 1 ? 'req_partial' : 'req_replacement')
+      },
+      evidence: async (requestId: string) => {
+        if (savedRequestMissing && requestId === 'req_partial') {
+          throw new ApiCallError(404, 'not_found', 'No such request.')
+        }
+        return setupEvidence(
+          requestId,
+          savedRequestMissing
+            ? {
+                state: 'observed',
+                observed_at: '2026-08-05T18:00:02.000Z',
+                latency_ms: 1_000,
+              }
+            : { state: 'unknown', observed_at: null, latency_ms: null },
+        )
+      },
+    } as unknown as ApiClient
+    const deps: CommandDeps = {
+      ...makeDeps(io, client),
+      cwd,
+      env: { XDG_CONFIG_HOME: path.join(cwd, 'config'), XDG_STATE_HOME: path.join(cwd, 'state') },
+      now: () => now,
+      sleep: async (milliseconds) => {
+        now += milliseconds
+      },
+    }
+
+    expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.failed)
+    expect(submitCalls).toBe(1)
+    expect(io.outLines.join('\n')).toContain('Next: Delivery proof')
+    expect(io.errLines.join('\n')).toContain('not proof of non-receipt')
+
+    io.outLines = []
+    io.errLines = []
+    expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.failed)
+    expect(submitCalls).toBe(1)
+    expect(io.outLines.join('\n')).toContain('Checking verification notification req_partial again.')
+
+    io.outLines = []
+    io.errLines = []
+    savedRequestMissing = true
+    expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.ok)
+    expect(submitCalls).toBe(2)
+    expect(io.outLines.join('\n')).toContain('saved proof had expired; sent replacement req_replacement')
+    expect(io.outLines.join('\n')).toContain('Companion Receipt observed from iPhone')
+  })
+
+  it('reports a proof-state write failure instead of crashing or sending twice', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-proof-unwritable-'))
+    const io = new CapturedIo()
+    let submitCalls = 0
+    const client = {
+      health: async () => true,
+      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+      listDevices: async () => ({ devices: [readyIphone] }),
+      submit: async () => {
+        submitCalls += 1
+        return setupReceipt('req_unwritable')
+      },
+    } as unknown as ApiClient
+    const deps = {
+      ...makeDeps(io, client),
+      cwd,
+      env: { XDG_CONFIG_HOME: path.join(cwd, 'config'), XDG_STATE_HOME: '/proc/notifai-unwritable' },
+    }
+
+    await expect(initCommand(deps, { hooks: false, skills: false })).resolves.toBe(EXIT.failed)
+    expect(submitCalls).toBe(1)
+    expect(io.errLines.join('\n')).toContain('Could not save setup proof req_unwritable')
+    expect(io.outLines.join('\n')).toContain('Next: Delivery proof')
+  })
+
+  it('does not claim proof for a macOS-only setup whose receipt bridge is unavailable', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-macos-proof-'))
+    const io = new CapturedIo()
+    let submitCalls = 0
+    const client = {
+      health: async () => true,
+      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+      listDevices: async () => ({
+        devices: [{ ...readyIphone, device_id: 'dev_mac', display_name: 'Mac', platform: 'macos' }],
+      }),
+      submit: async () => {
+        submitCalls += 1
+        return setupReceipt()
+      },
+    } as unknown as ApiClient
+    const deps = {
+      ...makeDeps(io, client),
+      cwd,
+      env: { XDG_CONFIG_HOME: path.join(cwd, 'config'), XDG_STATE_HOME: path.join(cwd, 'state') },
+    }
+
+    expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.failed)
+    expect(submitCalls).toBe(0)
+    expect(io.outLines.join('\n')).toContain('Next: Delivery proof')
+    expect(io.outLines.join('\n')).toContain('no supported macOS receipt bridge')
+  })
+
+  it('treats a revoked credential as the one blocker and points back to pairing', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-revoked-'))
+    const io = new CapturedIo()
+    const client = {
+      health: async () => true,
+      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+      listDevices: async () => {
+        throw new ApiCallError(401, 'machine_revoked', 'This machine was revoked.')
+      },
+    } as unknown as ApiClient
+    const deps = {
+      ...makeDeps(io, client),
+      cwd,
+      env: { XDG_CONFIG_HOME: path.join(cwd, 'config'), XDG_STATE_HOME: path.join(cwd, 'state') },
+    }
+
+    expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.failed)
+    const out = io.outLines.join('\n')
+    expect(out).toContain('Next: Account')
+    expect(out).toContain('pair it again')
+    expect(out).toContain('notifai login')
+    expect(out.match(/^Next:/gm)).toHaveLength(1)
+  })
+
+  it('scopes proof to each project worktree even on the same paired machine', async () => {
+    const stateRoot = mkdtempSync(path.join(os.tmpdir(), 'init-worktrees-state-'))
+    let submitCalls = 0
+    const client = {
+      health: async () => true,
+      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+      listDevices: async () => ({ devices: [readyIphone] }),
+      submit: async () => {
+        submitCalls += 1
+        return setupReceipt(`req_worktree_${submitCalls}`)
+      },
+      evidence: async (requestId: string) =>
+        setupEvidence(requestId, {
+          state: 'observed',
+          observed_at: '2026-08-05T18:00:02.000Z',
+          latency_ms: 1_000,
+        }),
+    } as unknown as ApiClient
+
+    for (const name of ['worktree-a', 'worktree-b']) {
+      const cwd = mkdtempSync(path.join(os.tmpdir(), `${name}-`))
+      const io = new CapturedIo()
+      const deps = {
+        ...makeDeps(io, client),
+        cwd,
+        env: { XDG_CONFIG_HOME: stateRoot, XDG_STATE_HOME: stateRoot },
+      }
+      expect(
+        await initCommand(deps, { projectId: 'shared-project', hooks: false, skills: false }),
+      ).toBe(EXIT.ok)
+    }
+
+    expect(submitCalls).toBe(2)
   })
 })
 

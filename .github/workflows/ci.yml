@@ -19,18 +19,24 @@ jobs:
         # user happens to run, so both ends have to stay green.
         node: ['20', '22', '24']
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: ${{ matrix.node }}
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
 
+      - name: Audit production dependencies
+        if: matrix.node == '24'
+        run: pnpm audit --prod --audit-level moderate
+
       # First, because a boundary violation makes the rest moot.
+      - run: pnpm check:boundary:self-test
+
       - run: pnpm check:boundary
 
       # Protocol before CLI: the CLI resolves its built exports.
@@ -42,13 +48,40 @@ jobs:
 
       - run: pnpm -r typecheck
 
-      # What would actually ship. Catches a file escaping the allowlist long
-      # before a publish would make it permanent.
-      - name: Inspect publishable contents
+      # Checks the actual pnpm pack file list, package metadata, license/docs,
+      # production dependency licenses, and CLI version single source.
+      - run: pnpm check:release
+
+  secret-history:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Install verified gitleaks binary
+        env:
+          GITLEAKS_VERSION: 8.30.1
         run: |
-          pnpm --filter @raidiant/notifai-protocol pack --pack-destination /tmp
-          pnpm --filter @raidiant/notifai pack --pack-destination /tmp
-          for f in /tmp/*.tgz; do
-            echo "=== $f ==="
-            tar -tzf "$f" | sort
-          done
+          mkdir -p "$RUNNER_TEMP/gitleaks"
+          cd "$RUNNER_TEMP/gitleaks"
+          curl --fail --silent --show-error --location --remote-name \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl --fail --silent --show-error --location --remote-name \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          grep "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz$" \
+            "gitleaks_${GITLEAKS_VERSION}_checksums.txt" | sha256sum --check --strict
+          tar -xzf "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" gitleaks
+          echo "$RUNNER_TEMP/gitleaks" >> "$GITHUB_PATH"
+
+      - run: node scripts/check-secrets.mjs
+
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/dependency-review-action@3c4e3dcb1aa7874d2c16be7d79418e9b7efd6261 # v4.8.2
+        with:
+          fail-on-severity: moderate
+          allow-licenses: Apache-2.0, BSD-3-Clause, ISC, MIT

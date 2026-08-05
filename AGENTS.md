@@ -23,11 +23,17 @@ decision-log references, or private project names.
 ## Gates — run before every commit
 
 ```sh
+pnpm check:boundary:self-test # prove boundary canaries still fail
 pnpm check:boundary   # structural allowlist + forbidden-content scan
 pnpm -r build         # protocol first — the CLI resolves its built exports
 pnpm -r test          # unit tests; no Docker, no network
 pnpm lint && pnpm -r typecheck
+pnpm check:release    # packed files, metadata, docs, licenses, CLI version
 ```
+
+CI also runs `pnpm check:secrets` with its pinned gitleaks binary. That gate
+scans both the working tree and full Git history, after proving both paths with
+ephemeral positive controls.
 
 If a change needs a new top-level entry, workspace package, or file kind,
 extend the allowlist in `scripts/check-boundary.mjs` in the same commit and
@@ -43,9 +49,10 @@ Do not run `npm publish`, do not create releases or tags, and do not push
 this repository anywhere new, without the maintainer asking for it in that
 instance. A version, once published, cannot be taken back.
 
-The skill installer source (`SKILLS_SOURCE`) stays empty and guarded until
-a tagged release exists to point it at; never point it at an unpublished or
-private location.
+The skill installer source (`SKILLS_SOURCE`) is pinned to the immutable public
+tag `v0.1.2`. In the skills CLI grammar, `owner/repo#ref` selects a Git ref;
+`owner/repo@name` selects a skill. Never point it at an unpublished, mutable,
+or private location.
 
 ## npm credentials
 

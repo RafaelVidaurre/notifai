@@ -24,11 +24,10 @@ depends on private code. `docs/BOUNDARY.md` states the policy and
 
 ## Status
 
-Pre-release scaffold. Nothing here is published to npm yet, and both
-packages are marked `"private": true` until the npm scope and package
-names are finalized. The license for this repository has not been chosen
-yet (Apache-2.0 is the working recommendation); until a LICENSE file
-exists, this repository must not be published or mirrored publicly.
+NotifAI is pre-1.0 and published under Apache-2.0. The current packages are
+`@raidiant/notifai` 0.1.2 and `@raidiant/notifai-protocol` 0.1.1; their
+versions advance independently. Only the latest published version is
+supported.
 
 ## Development
 
@@ -41,6 +40,7 @@ pnpm test           # unit tests (no Docker, no network)
 pnpm typecheck
 pnpm lint
 pnpm check:boundary # verify no private imports or disallowed files
+pnpm check:release  # verify package contents, metadata, docs, and licenses
 ```
 
 The CLI binary builds to `apps/cli/dist/main.js`.
@@ -50,5 +50,5 @@ The CLI binary builds to `apps/cli/dist/main.js`.
 The NotifAI agent guidance skill lives in `skills/notifai/` and is never
 installed by default. `notifai init` coordinates project configuration,
 sign-in, optional harness hooks, and device readiness. `notifai init --skills`
-fails cleanly in this build because the installable skill source is not
-configured until the first tagged release exists to pin it to.
+installs the skill from the immutable public tag `v0.1.2`; the underlying
+installer source is `RafaelVidaurre/notifai#v0.1.2` (`#` selects a Git ref).

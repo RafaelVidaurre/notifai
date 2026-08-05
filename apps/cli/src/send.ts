@@ -196,6 +196,9 @@ export function formatReceipt(receipt: SubmissionReceipt): string {
     const detail = d.provider_reason ? ` (${d.provider_reason})` : ''
     lines.push(`  ${d.device_name}: ${d.state}${detail}`)
   }
+  lines.push(
+    `  device receipt is not assessed here; run notifai status ${receipt.request_id} for Companion Receipt evidence`,
+  )
   for (const w of receipt.warnings) lines.push(`  warning ${w.path}: ${w.message}`)
   return lines.join('\n')
 }

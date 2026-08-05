@@ -1,7 +1,6 @@
 {
   "name": "notifai-monorepo",
   "private": true,
-  "version": "0.1.0",
   "type": "module",
   "packageManager": "pnpm@11.8.0",
   "engines": {
@@ -12,7 +11,10 @@
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
     "lint": "eslint .",
-    "check:boundary": "node scripts/check-boundary.mjs"
+    "check:boundary": "node scripts/check-boundary.mjs",
+    "check:boundary:self-test": "node scripts/check-boundary.mjs --self-test",
+    "check:release": "node scripts/check-release.mjs",
+    "check:secrets": "node scripts/check-secrets.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

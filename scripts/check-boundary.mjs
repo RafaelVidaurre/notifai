@@ -11,7 +11,16 @@
  * repository references) deliberately lives in the private repository's
  * scanner, so its patterns are not published here.
  */
-import { readdirSync, readFileSync, statSync } from 'node:fs'
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
 
@@ -96,44 +105,93 @@ for (const { pattern, control } of FORBIDDEN_SOURCE_PATTERNS) {
   }
 }
 
-const failures = []
+function scan(scanRoot) {
+  const failures = []
 
-for (const entry of readdirSync(root)) {
-  if (!TOP_LEVEL_ALLOWLIST.has(entry)) {
-    failures.push(`top-level entry not in allowlist: ${entry}`)
-  }
-}
-for (const [dir, allowlist] of [
-  ['apps', APPS_ALLOWLIST],
-  ['packages', PACKAGES_ALLOWLIST],
-]) {
-  for (const entry of readdirSync(path.join(root, dir))) {
-    if (!allowlist.has(entry)) failures.push(`${dir}/ entry not in allowlist: ${dir}/${entry}`)
-  }
-}
-
-function walk(dir) {
-  for (const entry of readdirSync(dir)) {
-    const full = path.join(dir, entry)
-    const relative = path.relative(root, full)
-    if (SKIP_DIRS.has(entry)) continue
-    const stats = statSync(full)
-    for (const pattern of FORBIDDEN_FILE_PATTERNS) {
-      if (pattern.test(entry)) failures.push(`forbidden file: ${relative}`)
+  for (const entry of readdirSync(scanRoot)) {
+    if (!TOP_LEVEL_ALLOWLIST.has(entry)) {
+      failures.push(`top-level entry not in allowlist: ${entry}`)
     }
-    if (stats.isDirectory()) {
-      walk(full)
-    } else if (SOURCE_EXTENSIONS.has(path.extname(entry)) || entry === 'package.json') {
-      const isSelf = relative === path.join('scripts', 'check-boundary.mjs')
-      if (isSelf) continue
-      const content = readFileSync(full, 'utf8')
-      for (const { pattern, reason } of FORBIDDEN_SOURCE_PATTERNS) {
-        if (pattern.test(content)) failures.push(`${relative}: ${reason}`)
+  }
+  for (const [dir, allowlist] of [
+    ['apps', APPS_ALLOWLIST],
+    ['packages', PACKAGES_ALLOWLIST],
+  ]) {
+    for (const entry of readdirSync(path.join(scanRoot, dir))) {
+      if (!allowlist.has(entry)) failures.push(`${dir}/ entry not in allowlist: ${dir}/${entry}`)
+    }
+  }
+
+  function walk(dir) {
+    for (const entry of readdirSync(dir)) {
+      const full = path.join(dir, entry)
+      const relative = path.relative(scanRoot, full)
+      if (SKIP_DIRS.has(entry)) continue
+      const stats = statSync(full)
+      for (const pattern of FORBIDDEN_FILE_PATTERNS) {
+        if (pattern.test(entry)) failures.push(`forbidden file: ${relative}`)
+      }
+      if (stats.isDirectory()) {
+        walk(full)
+      } else if (SOURCE_EXTENSIONS.has(path.extname(entry)) || entry === 'package.json') {
+        const isSelf = scanRoot === root && relative === path.join('scripts', 'check-boundary.mjs')
+        if (isSelf) continue
+        const content = readFileSync(full, 'utf8')
+        for (const { pattern, reason } of FORBIDDEN_SOURCE_PATTERNS) {
+          if (pattern.test(content)) failures.push(`${relative}: ${reason}`)
+        }
       }
     }
   }
+  walk(scanRoot)
+  return failures
 }
-walk(root)
+
+function selfTest() {
+  const fixture = mkdtempSync(path.join(os.tmpdir(), 'notifai-boundary-control-'))
+  try {
+    mkdirSync(path.join(fixture, 'apps', 'cli'), { recursive: true })
+    mkdirSync(path.join(fixture, 'packages', 'protocol'), { recursive: true })
+    writeFileSync(path.join(fixture, 'package.json'), '{}\n')
+    if (scan(fixture).length !== 0) throw new Error('clean control fixture did not pass')
+
+    const topLevelCanary = path.join(fixture, 'private-service')
+    writeFileSync(topLevelCanary, 'control\n')
+    if (!scan(fixture).some((failure) => failure.includes('top-level entry'))) {
+      throw new Error('top-level allowlist did not catch its positive control')
+    }
+    rmSync(topLevelCanary, { force: true })
+
+    const fileCanary = path.join(fixture, 'apps', 'cli', '.env')
+    writeFileSync(fileCanary, 'CONTROL=true\n')
+    if (!scan(fixture).some((failure) => failure.includes('forbidden file'))) {
+      throw new Error('forbidden-file scan did not catch its positive control')
+    }
+    rmSync(fileCanary, { force: true })
+
+    const importCanary = path.join(fixture, 'apps', 'cli', 'control.ts')
+    writeFileSync(importCanary, `${FORBIDDEN_SOURCE_PATTERNS[0].control}\n`)
+    if (!scan(fixture).some((failure) => failure.includes('private server package'))) {
+      throw new Error('private-import scan did not catch its positive control')
+    }
+    rmSync(importCanary, { force: true })
+
+    mkdirSync(path.join(fixture, 'apps', 'server'))
+    if (!scan(fixture).some((failure) => failure.includes('apps/server'))) {
+      throw new Error('workspace allowlist did not catch its positive control')
+    }
+  } finally {
+    rmSync(fixture, { recursive: true, force: true })
+  }
+  console.log('Boundary positive controls passed.')
+}
+
+if (process.argv.includes('--self-test')) {
+  selfTest()
+  process.exit(0)
+}
+
+const failures = scan(root)
 
 if (failures.length > 0) {
   console.error('Boundary check FAILED:')

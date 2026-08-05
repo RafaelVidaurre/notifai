@@ -45,6 +45,14 @@ export const EVIDENCE_STAGES = [
 ] as const
 export type EvidenceStage = (typeof EVIDENCE_STAGES)[number]
 
+/**
+ * Whether the evidence trail contains a Companion Receipt for a Delivery.
+ * `unknown` is deliberately not `failed`: receipt reporting is best-effort,
+ * and elapsed time alone never turns absence into proof of non-receipt.
+ */
+export const COMPANION_RECEIPT_STATES = ['observed', 'unknown'] as const
+export type CompanionReceiptState = (typeof COMPANION_RECEIPT_STATES)[number]
+
 /** Summarize per-Delivery states into one overall request state. */
 export function summarizeOverall(states: readonly DeliveryState[]): OverallState {
   if (states.length === 0) return 'pending'

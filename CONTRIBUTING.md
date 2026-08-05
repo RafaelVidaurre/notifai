@@ -27,14 +27,18 @@ pnpm -r build      # protocol first; the CLI resolves its built exports
 ## Before you open a pull request
 
 ```sh
+pnpm check:boundary:self-test
 pnpm check:boundary   # structural allowlist + forbidden-content scan
 pnpm -r build
 pnpm -r test          # no Docker, no network
 pnpm lint && pnpm -r typecheck
+pnpm check:release    # package allowlist, metadata, docs, and licenses
 ```
 
-All four must pass. The test suite needs neither a network nor a
-container runtime, so a failure is a real failure.
+All gates must pass. The test suite needs neither a network nor a container
+runtime, so a failure is a real failure. CI additionally runs a pinned gitleaks
+binary across the working tree and full history; its job first proves both
+scanner paths against ephemeral canaries.
 
 ## What makes a change easy to accept
 

@@ -315,11 +315,11 @@ config
 program
   .command('init')
   .description(
-    'Set up NotifAI here, idempotently: sign-in, project id, hooks, device readiness. ' +
+    'Set up NotifAI here, idempotently: sign-in, project id, hooks, device readiness, live receipt proof. ' +
       'Interactive at a human terminal; never prompts otherwise (agents: pass flags)',
   )
   .option('--project-id <id>', 'project identifier slug (default: derived from the directory name)')
-  .option('--skills', 'reserved: this build has no published agent-skill source and exits with an error')
+  .option('--skills', 'install/update the agent skill from its pinned public release')
   .option('--no-skills', 'suppress the optional agent-skill status line')
   .option('--hooks', 'install harness hooks for registered-question routing')
   .option('--no-hooks', 'skip the hooks without being asked')
@@ -329,7 +329,7 @@ program
 
 program
   .command('doctor')
-  .description('Audit config, credential, server, contract, device, and hook readiness (no live send)')
+  .description('Audit config, credential, server, contract, device, hook, and saved receipt proof (no live send)')
   .option('--json', 'machine-readable output')
   .action(async (opts: { json?: boolean }) => {
     process.exit(await doctorCommand(deps, opts))

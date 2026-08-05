@@ -1,6 +1,6 @@
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
@@ -8,9 +8,12 @@ import {
   CAPABILITIES_V1,
   REPLY_MAX_WINDOW_SECONDS,
   validateDraft,
+  type EvidenceSnapshot,
   type ListRepliesResponse,
   type Platform,
   type ReplyView,
+  type RoutableDevice,
+  type SubmissionReceipt,
 } from '@raidiant/notifai-protocol'
 import { sha256Hex } from '@raidiant/notifai-protocol/node'
 import {
@@ -668,15 +671,37 @@ export async function statusCommand(
     }
     deps.io.out(`request ${snapshot.request_id} (${snapshot.event ?? 'no event'}) — ${snapshot.overall}`)
     for (const d of snapshot.deliveries) {
-      deps.io.out(`  ${d.device_name}: ${d.state} after ${d.attempts} attempt(s)`)
+      deps.io.out(`  ${d.device_name}:`)
+      deps.io.out(`    Delivery: ${d.state} after ${d.attempts} attempt(s)`)
+      deps.io.out(
+        `    Provider Acceptance: ${d.state === 'provider_accepted' ? 'accepted' : 'not recorded'}`,
+      )
+      if (d.companion_receipt.state === 'observed') {
+        const latency = d.companion_receipt.latency_ms
+        deps.io.out(
+          `    Companion Receipt: observed at ${d.companion_receipt.observed_at}` +
+            (latency === null ? '' : ` (${formatElapsed(latency)} after Provider Acceptance)`),
+        )
+      } else {
+        deps.io.out(
+          '    Companion Receipt: unknown — not observed; this is not a failure or proof of non-receipt',
+        )
+      }
       for (const e of d.events) {
-        deps.io.out(`    ${e.occurred_at}  ${e.stage}${e.reason ? ` (${e.reason})` : ''}`)
+        deps.io.out(`      ${e.occurred_at}  ${e.stage}${e.reason ? ` (${e.reason})` : ''}`)
       }
     }
     return EXIT.ok
   } catch (err) {
     return reportError(deps, err)
   }
+}
+
+function formatElapsed(milliseconds: number): string {
+  const totalSeconds = Math.floor(milliseconds / 1_000)
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return minutes === 0 ? `${seconds}s` : `${minutes}m ${seconds}s`
 }
 
 const MEDIA_TYPES: Record<string, 'image/jpeg' | 'image/png' | 'image/gif'> = {
@@ -944,15 +969,20 @@ export function askCommand(deps: CommandDeps, question: string, flags: AskFlags)
     deps.io.err(CHOICE_USAGE)
     return EXIT.usage
   }
-  registerQuestion(
-    sessionId,
-    deps.env,
-    {
-      question: question.trim(),
-      ...(choices !== null ? { choices: choices.map((choice) => choice.label) } : {}),
-    },
-    (deps.now ?? Date.now)(),
-  )
+  try {
+    registerQuestion(
+      sessionId,
+      deps.env,
+      {
+        question: question.trim(),
+        ...(choices !== null ? { choices: choices.map((choice) => choice.label) } : {}),
+      },
+      (deps.now ?? Date.now)(),
+    )
+  } catch (err) {
+    deps.io.err(`Could not register the question: ${err instanceof Error ? err.message : String(err)}`)
+    return EXIT.failed
+  }
   if (choices !== null) {
     deps.io.out(`Answers offered: ${choices.map((choice) => choice.label).join(' / ')}`)
   }
@@ -1419,14 +1449,11 @@ export async function configSetCommand(
 // ---------------------------------------------------------------------------
 
 /**
- * Where `npx skills add` fetches the optional agent skill from. The skill's
- * canonical home is the public repository (RafaelVidaurre/notifai), which has
- * nothing pushed to it yet, so no source can resolve today; the guard below
- * keeps `--skills` from installing anything until a tagged release exists to
- * pin this to. Never point this at the private repository — the installer
- * command is printed to users, and only public sources belong in it.
+ * Where `npx skills add` fetches the optional agent skill from. In skills CLI
+ * 1.5.x, `owner/repo@name` selects a skill; a Git ref belongs after `#`.
+ * Keep this immutable and public because the command is printed to users.
  */
-const SKILLS_SOURCE = ''
+export const SKILLS_SOURCE = 'RafaelVidaurre/notifai#v0.1.2'
 
 /** Derive a contract-valid project slug from a directory name. */
 export function projectSlugFrom(name: string): string {
@@ -1451,6 +1478,72 @@ export interface InitFlags {
   hooks?: boolean
 }
 
+interface SetupProofRecord {
+  request_id: string
+  device_id: string
+  project: string | null
+  started_at: string
+}
+
+const DEVICE_BRIDGE_TIMEOUT_MS = 5 * 60 * 1000
+const DEVICE_BRIDGE_POLL_MS = 2_000
+const PROOF_TIMEOUT_MS = 30_000
+const PROOF_POLL_MS = 1_000
+
+function setupProofPath(deps: CommandDeps): string {
+  let projectDir = path.resolve(deps.cwd)
+  try {
+    projectDir = realpathSync(projectDir)
+  } catch {
+    // A deleted or not-yet-created cwd cannot collide with a real directory:
+    // the resolved absolute path is still a stable local identity for it.
+  }
+  const digest = createHash('sha256').update(projectDir).digest('hex').slice(0, 32)
+  const xdg = deps.env['XDG_STATE_HOME']
+  const base = xdg && xdg !== '' ? xdg : path.join(os.homedir(), '.local', 'state')
+  return path.join(base, 'notifai', 'setup-proofs', `${digest}.json`)
+}
+
+function readSetupProof(deps: CommandDeps): SetupProofRecord | null {
+  const file = setupProofPath(deps)
+  if (!existsSync(file)) return null
+  try {
+    const parsed = JSON.parse(readFileSync(file, 'utf8')) as Partial<SetupProofRecord>
+    return typeof parsed.request_id === 'string' &&
+      typeof parsed.device_id === 'string' &&
+      (typeof parsed.project === 'string' || parsed.project === null) &&
+      typeof parsed.started_at === 'string'
+      ? (parsed as SetupProofRecord)
+      : null
+  } catch {
+    // Corrupt local evidence is not readiness. A fresh proof replaces it.
+    return null
+  }
+}
+
+function writeSetupProof(deps: CommandDeps, proof: SetupProofRecord): boolean {
+  const file = setupProofPath(deps)
+  try {
+    mkdirSync(path.dirname(file), { recursive: true })
+    writeFileSync(file, `${JSON.stringify(proof, null, 2)}\n`, { mode: 0o600 })
+    return true
+  } catch (err) {
+    deps.io.err(
+      `Could not save setup proof ${proof.request_id} at ${file}: ${String(err)}`,
+    )
+    return false
+  }
+}
+
+function observedCompanionReceipt(
+  snapshot: EvidenceSnapshot,
+  deviceId: string,
+): { delivery: EvidenceSnapshot['deliveries'][number]; observedAt: string } | null {
+  const delivery = snapshot.deliveries.find((candidate) => candidate.device_id === deviceId)
+  const receipt = delivery?.events.find((event) => event.stage === 'companion_received')
+  return delivery && receipt ? { delivery, observedAt: receipt.occurred_at } : null
+}
+
 /**
  * The setup coordinator that observes each prerequisite and advances the ones
  * this build can perform.
@@ -1469,10 +1562,16 @@ export interface InitFlags {
  * this stays silent about what it did — the re-assessment that follows reports
  * the new state, and narrating both is how a setup log becomes unreadable.
  *
- * Returns false when the attempt failed, which is different from declining:
- * a decline leaves an optional gap open and is fine, a failure is not.
+ * `pending` means the action is real but its evidence has not arrived yet;
+ * `failed` means the action itself could not be performed.
  */
-async function closeGap(deps: CommandDeps, state: ReadinessState, flags: InitFlags): Promise<boolean> {
+type GapCloseResult = 'closed' | 'pending' | 'failed'
+
+async function closeGap(
+  deps: CommandDeps,
+  state: ReadinessState,
+  flags: InitFlags,
+): Promise<GapCloseResult> {
   if (state.id === 'project') {
     const configPath = path.join(deps.cwd, '.notifai', 'config.toml')
     const existing = existsSync(configPath)
@@ -1481,7 +1580,7 @@ async function closeGap(deps: CommandDeps, state: ReadinessState, flags: InitFla
     existing['project'] = projectSlugFrom(flags.projectId ?? path.basename(deps.cwd))
     mkdirSync(path.dirname(configPath), { recursive: true })
     writeFileSync(configPath, `${stringifyToml(existing)}\n`)
-    return true
+    return 'closed'
   }
 
   if (state.id === 'hooks') {
@@ -1497,9 +1596,9 @@ async function closeGap(deps: CommandDeps, state: ReadinessState, flags: InitFla
       deps.io.err(
         `Could not tell which harness to wire. Run: notifai hooks install --harness <${HARNESSES.join('|')}>`,
       )
-      return false
+      return 'failed'
     }
-    return hooksInstallCommand(deps, { harness }) === EXIT.ok
+    return hooksInstallCommand(deps, { harness }) === EXIT.ok ? 'closed' : 'failed'
   }
 
   if (state.id === 'skill') {
@@ -1516,10 +1615,263 @@ async function closeGap(deps: CommandDeps, state: ReadinessState, flags: InitFla
       deps.io.err('Skill installation failed — run it manually with:')
       deps.io.err(`  npx skills add ${SKILLS_SOURCE} --skill notifai`)
     }
-    return code === 0
+    return code === 0 ? 'closed' : 'failed'
   }
 
-  return false
+  if (state.id === 'proof') return await runSetupProof(deps)
+
+  return 'failed'
+}
+
+function deviceCanReceive(device: RoutableDevice): boolean {
+  return (
+    device.registration_healthy &&
+    (device.permission_status === 'authorized' || device.permission_status === 'provisional')
+  )
+}
+
+function readyIosDevices(devices: readonly RoutableDevice[]): RoutableDevice[] {
+  return devices.filter((device) => device.platform === 'ios' && deviceCanReceive(device))
+}
+
+function deviceBridgeMessage(devices: readonly RoutableDevice[]): string {
+  if (devices.length === 0) {
+    return 'Waiting for the companion app to sign in and register…'
+  }
+  const denied = devices.find((device) => device.permission_status === 'denied')
+  if (denied) return `Waiting for notifications to be allowed on ${denied.display_name}…`
+  const undecided = devices.find((device) => device.permission_status === 'not_determined')
+  if (undecided) return `Waiting for ${undecided.display_name} to allow the notification prompt…`
+  return 'Waiting for a companion device to become ready…'
+}
+
+/**
+ * Observe the supported Device Installation path while the user finishes the
+ * app-side work. There is deliberately no invented QR or download URL here:
+ * this release exposes neither an App Store/TestFlight URL nor a device-pairing
+ * endpoint, and a placeholder bridge is worse than an explicit boundary.
+ */
+async function waitForReadyDevice(deps: CommandDeps, state: ReadinessState): Promise<GapCloseResult> {
+  const remedy = state.remedy
+  if (deps.io.interactive !== true || remedy?.by !== 'user-elsewhere') return 'pending'
+
+  await deps.io.note?.(
+    `${state.detail}\n${remedy.summary}`,
+    'Finish setup on your companion device',
+  )
+  if (!(await deps.io.confirm('Wait here while you finish that on your device?', true))) {
+    return 'pending'
+  }
+
+  const config = loadConfig({ cwd: deps.cwd, env: deps.env })
+  const authed = authedClient(deps, config)
+  if (!authed) return 'failed'
+  const now = deps.now ?? Date.now
+  const sleep = deps.sleep ?? ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)))
+  const deadline = now() + DEVICE_BRIDGE_TIMEOUT_MS
+  const spinner = await deps.io.spinner?.('Waiting for a companion device…')
+  let lastDevices: RoutableDevice[] = []
+
+  while (now() < deadline) {
+    try {
+      const response = await authed.client.listDevices()
+      lastDevices = response.devices
+      const ready = response.devices.find(deviceCanReceive)
+      if (ready) {
+        spinner?.stop(`${ready.display_name} is ready to receive`)
+        return 'closed'
+      }
+      spinner?.message(deviceBridgeMessage(response.devices))
+    } catch (err) {
+      if (!(err instanceof NetworkError)) {
+        spinner?.error('Could not check companion readiness')
+        reportError(deps, err)
+        return 'failed'
+      }
+      spinner?.message('Connection lost — still watching…')
+    }
+    await sleep(Math.min(DEVICE_BRIDGE_POLL_MS, Math.max(0, deadline - now())))
+  }
+
+  spinner?.error('No companion device became ready')
+  deps.io.err(deviceBridgeMessage(lastDevices).replace(/…$/, '.'))
+  return 'pending'
+}
+
+function setupProofDraft(
+  config: CliConfig,
+  device: RoutableDevice,
+): ReturnType<typeof buildDraft> {
+  const project = config.project.value
+  return buildDraft(config, {
+    title: 'NotifAI is ready',
+    body:
+      project === null
+        ? 'This real notification completed setup verification.'
+        : `This real notification completed setup verification for ${project}.`,
+    event: 'setup_verified',
+    kind: 'update',
+    platform: 'ios',
+    device: [device.device_id],
+    sound: 'none',
+    level: 'passive',
+    collapseKey: 'notifai-setup-verification',
+  })
+}
+
+async function submitSetupProof(
+  deps: CommandDeps,
+  client: ApiClient,
+  config: CliConfig,
+  device: RoutableDevice,
+): Promise<SubmissionReceipt | null> {
+  const build = setupProofDraft(config, device)
+  if (!build.ok) {
+    deps.io.err(`Could not build the setup verification notification: ${build.error}`)
+    return null
+  }
+  const capabilities = CAPABILITIES_V1.describe(build.platform)
+  if (!capabilities) {
+    deps.io.err(`No capability contract is available for ${build.platform}.`)
+    return null
+  }
+  const validation = validateDraft(build.draft, capabilities)
+  if (!validation.ok) {
+    for (const issue of validation.errors) {
+      deps.io.err(`Setup verification ${issue.path}: ${issue.message}`)
+    }
+    return null
+  }
+  try {
+    return await client.submit(
+      {
+        idempotency_key: `init-${randomBytes(12).toString('base64url')}`,
+        draft: build.draft,
+      },
+      config.wait_seconds.value,
+    )
+  } catch (err) {
+    reportError(deps, err)
+    return null
+  }
+}
+
+/**
+ * Send or resume one real setup probe, then wait for a Companion Receipt.
+ * Provider Acceptance is intentionally insufficient: it proves APNs accepted
+ * the push, not that a companion process received it.
+ */
+async function runSetupProof(deps: CommandDeps): Promise<GapCloseResult> {
+  const config = loadConfig({ cwd: deps.cwd, env: deps.env })
+  const authed = authedClient(deps, config)
+  if (!authed) return 'failed'
+
+  let devices: RoutableDevice[]
+  try {
+    devices = (await authed.client.listDevices()).devices
+  } catch (err) {
+    reportError(deps, err)
+    return 'failed'
+  }
+  const candidates = readyIosDevices(devices)
+  const existing = readSetupProof(deps)
+  const target =
+    candidates.find(
+      (device) =>
+        device.device_id === existing?.device_id && existing.project === config.project.value,
+    ) ?? candidates[0]
+  if (!target) {
+    deps.io.err(
+      'Setup proof needs a receipt-capable iPhone. The current macOS notification path does not emit Companion Receipts.',
+    )
+    return 'pending'
+  }
+
+  let proof =
+    existing?.device_id === target.device_id && existing.project === config.project.value
+      ? existing
+      : null
+  if (proof === null) {
+    const receipt = await submitSetupProof(deps, authed.client, config, target)
+    if (receipt === null) return 'failed'
+    if (receipt.overall === 'provider_rejected_all') {
+      deps.io.err(formatReceipt(receipt))
+      return 'failed'
+    }
+    proof = {
+      request_id: receipt.request_id,
+      device_id: target.device_id,
+      project: config.project.value,
+      started_at: new Date((deps.now ?? Date.now)()).toISOString(),
+    }
+    if (!writeSetupProof(deps, proof)) return 'failed'
+    deps.io.out(`Verification notification sent to ${target.display_name} (${proof.request_id}).`)
+  } else {
+    deps.io.out(`Checking verification notification ${proof.request_id} again.`)
+  }
+
+  const now = deps.now ?? Date.now
+  const sleep = deps.sleep ?? ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)))
+  const deadline = now() + PROOF_TIMEOUT_MS
+  const spinner = deps.io.interactive === true
+    ? await deps.io.spinner?.('Waiting for a Companion Receipt…')
+    : null
+  let lastError: unknown = null
+  let replacedMissingProof = false
+
+  for (;;) {
+    try {
+      const snapshot = await authed.client.evidence(proof.request_id)
+      const observed = observedCompanionReceipt(snapshot, proof.device_id)
+      if (observed) {
+        spinner?.stop(`Receipt observed from ${observed.delivery.device_name}`)
+        return 'closed'
+      }
+      lastError = null
+    } catch (err) {
+      lastError = err
+      if (
+        err instanceof ApiCallError &&
+        err.code === 'not_found' &&
+        !replacedMissingProof
+      ) {
+        const receipt = await submitSetupProof(deps, authed.client, config, target)
+        if (receipt === null) return 'failed'
+        if (receipt.overall === 'provider_rejected_all') {
+          deps.io.err(formatReceipt(receipt))
+          return 'failed'
+        }
+        proof = {
+          request_id: receipt.request_id,
+          device_id: target.device_id,
+          project: config.project.value,
+          started_at: new Date(now()).toISOString(),
+        }
+        if (!writeSetupProof(deps, proof)) return 'failed'
+        replacedMissingProof = true
+        lastError = null
+        deps.io.out(`The saved proof had expired; sent replacement ${proof.request_id}.`)
+        continue
+      }
+      if (!(err instanceof NetworkError)) {
+        spinner?.error('Could not read Companion Receipt evidence')
+        reportError(deps, err)
+        return 'failed'
+      }
+      spinner?.message('Connection lost — still checking the same request…')
+    }
+
+    if (now() >= deadline) break
+    await sleep(Math.min(PROOF_POLL_MS, Math.max(0, deadline - now())))
+  }
+
+  spinner?.error('Companion Receipt not observed yet')
+  if (lastError instanceof NetworkError) deps.io.err(lastError.message)
+  deps.io.err(
+    `No Companion Receipt was observed for ${proof.request_id} within ${PROOF_TIMEOUT_MS / 1000}s. ` +
+      'That is not proof of non-receipt; re-run `notifai init` to check this same notification again.',
+  )
+  return 'pending'
 }
 
 /** Whether an optional gap should be closed, given flags and who is watching. */
@@ -1559,37 +1911,104 @@ function wantsOptional(deps: CommandDeps, state: ReadinessState, flags: InitFlag
 export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<number> {
   await deps.io.intro?.('NotifAI setup')
 
-  if (SKILLS_SOURCE === '' && flags.skills === true) {
-    deps.io.err('The optional agent skill is not published yet; this build has no skill source configured.')
-    return EXIT.failed
-  }
-
   let readiness = await assessReadiness(deps)
   let failed = false
+  const attempted = new Set<string>()
 
-  // One pass is enough: closing a gap never opens an earlier one, and the
-  // states that remain are exactly those needing someone who is not the CLI.
-  for (const state of readiness.states) {
-    const remedy = state.remedy
-    if (remedy === undefined) continue
+  // Re-assess after every successful action. This is how a browser approval or
+  // companion registration can unlock the next state while the user is still
+  // here, without copying the dependency graph into a second setup script.
+  for (;;) {
+    let advanced = false
+    let stop = false
 
-    // Its to launch, theirs to complete. Offering to start the sign-in is the
-    // single most useful thing this command does for a person, so it is worth
-    // the extra branch — but only when someone is actually watching, since an
-    // agent that reached a browser prompt would simply hang.
-    if (remedy.by === 'user-here' && remedy.interactive === true) {
-      if (state.status !== 'gap' || deps.io.interactive !== true) continue
-      if (!(await deps.io.confirm('Sign in now? (opens your browser)', true))) continue
-      if ((await loginCommand(deps, {})) !== EXIT.ok) failed = true
-      continue
+    for (const state of readiness.states) {
+      if (state.status === 'ready') continue
+      if (state.status === 'unknown') {
+        stop = true
+        break
+      }
+
+      const remedy = state.remedy
+      if (remedy === undefined || attempted.has(state.id)) {
+        if (state.status === 'gap') stop = true
+        if (stop) break
+        continue
+      }
+
+      if (state.status === 'optional-gap') {
+        if (remedy.by !== 'cli' || !(await wantsOptional(deps, state, flags))) continue
+        attempted.add(state.id)
+        const result = await closeGap(deps, state, flags)
+        if (result === 'failed') failed = true
+        if (result !== 'closed') {
+          stop = true
+          break
+        }
+        readiness = await assessReadiness(deps)
+        advanced = true
+        break
+      }
+
+      if (remedy.by === 'cli') {
+        attempted.add(state.id)
+        const result = await closeGap(deps, state, flags)
+        if (result === 'failed') failed = true
+        if (result !== 'closed') {
+          stop = true
+          break
+        }
+        readiness = await assessReadiness(deps)
+        advanced = true
+        break
+      }
+
+      // Its to launch, theirs to complete. Offering to start the sign-in is
+      // useful only when someone is demonstrably watching; an agent never
+      // reaches this prompt or opens a browser.
+      if (
+        remedy.by === 'user-here' &&
+        remedy.interactive === true &&
+        deps.io.interactive === true
+      ) {
+        attempted.add(state.id)
+        if (!(await deps.io.confirm('Sign in now? (opens your browser)', true))) {
+          stop = true
+          break
+        }
+        if ((await loginCommand(deps, {})) !== EXIT.ok) {
+          failed = true
+          stop = true
+          break
+        }
+        readiness = await assessReadiness(deps)
+        advanced = true
+        break
+      }
+
+      if (
+        state.id === 'devices' &&
+        remedy.by === 'user-elsewhere' &&
+        deps.io.interactive === true
+      ) {
+        attempted.add(state.id)
+        const result = await waitForReadyDevice(deps, state)
+        if (result === 'failed') failed = true
+        if (result !== 'closed') {
+          stop = true
+          break
+        }
+        readiness = await assessReadiness(deps)
+        advanced = true
+        break
+      }
+
+      // A human-only remedy is the first blocker for an unattended agent.
+      stop = true
+      break
     }
 
-    if (remedy.by !== 'cli') continue
-    if (state.status === 'gap') {
-      if (!(await closeGap(deps, state, flags))) failed = true
-    } else if (state.status === 'optional-gap' && (await wantsOptional(deps, state, flags))) {
-      if (!(await closeGap(deps, state, flags))) failed = true
-    }
+    if (stop || !advanced) break
   }
 
   readiness = await assessReadiness(deps)
@@ -1616,7 +2035,9 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
     deps.io.out('  Then re-run `notifai init` and it will pick up from here.')
   }
   await deps.io.outro?.('One step remains (above)')
-  return failed ? EXIT.failed : EXIT.ok
+  // An agent must be able to branch on setup being blocked without parsing
+  // prose. A present human may deliberately leave and resume later.
+  return failed || deps.io.interactive !== true ? EXIT.failed : EXIT.ok
 }
 
 // ---------------------------------------------------------------------------
@@ -1675,6 +2096,8 @@ async function contractCheck(client: ApiClient): Promise<{ name: string; ok: boo
 export async function assessReadiness(deps: CommandDeps): Promise<Readiness> {
   const config = loadConfig({ cwd: deps.cwd, env: deps.env })
   const states: ReadinessState[] = []
+  let accountClient: ApiClient | null = null
+  let accountDevices: RoutableDevice[] | null = null
 
   const configPath = path.join(deps.cwd, '.notifai', 'config.toml')
   const projectSlug = config.project.value
@@ -1784,9 +2207,11 @@ export async function assessReadiness(deps: CommandDeps): Promise<Readiness> {
     states.push({ id: 'devices', title: 'Your devices', status: 'unknown', detail: `not checked — ${why}` })
   } else {
     const client = makeClient(deps, baseUrl, `Bearer nfm_${credential.machineId}.${credential.secret}`)
+    accountClient = client
     try {
       const { devices } = await client.listDevices()
-      const ready = devices.filter((d) => d.registration_healthy)
+      accountDevices = devices
+      const ready = devices.filter(deviceCanReceive)
       states.push({
         id: 'auth',
         title: 'Account',
@@ -1812,14 +2237,16 @@ export async function assessReadiness(deps: CommandDeps): Promise<Readiness> {
               // permission prompt.
               detail:
                 devices.length === 0
-                  ? 'nothing registered yet'
+                  ? 'nothing registered yet; this release has no supported App Store/TestFlight URL for the CLI to open'
                   : `${devices.map((d) => `${d.display_name} (${d.permission_status})`).join(', ')} — registered but not able to receive`,
               remedy: {
                 by: 'user-elsewhere',
                 summary:
                   devices.length === 0
-                    ? 'install the companion app on your phone, sign in with the same account, and allow notifications'
-                    : 'allow notifications for NotifAI in that device’s system settings',
+                    ? 'install NotifAI through a supported distribution you already have, open it, sign in with the same account, and allow notifications'
+                    : devices.some((d) => d.permission_status === 'denied')
+                      ? 'allow notifications for NotifAI in that device’s system settings'
+                      : 'open NotifAI on that device and allow its notification prompt',
               },
             },
       )
@@ -1843,31 +2270,115 @@ export async function assessReadiness(deps: CommandDeps): Promise<Readiness> {
 
   states.push(...hookStates(deps))
 
-  states.push(
-    SKILLS_SOURCE === ''
-      ? {
-          id: 'skill',
-          title: 'Agent guidance skill',
-          // Nothing outstanding, because nothing can be done: this build has
-          // no published skill source configured. Silence here would read as
-          // an omission to anyone who had seen it mentioned in the docs.
-          status: 'ready',
-          detail: 'not applicable — this build has no published skill source configured',
-        }
-      : {
-          id: 'skill',
-          title: 'Agent guidance skill',
-          status: 'optional-gap',
-          detail: 'not installed in this project',
-          remedy: {
-            by: 'cli',
-            summary: 'install the skill agents follow when deciding to notify',
-            command: 'notifai init --skills',
-          },
-        },
-  )
+  states.push({
+    id: 'skill',
+    title: 'Agent guidance skill',
+    status: 'optional-gap',
+    detail: `not installed from ${SKILLS_SOURCE} in this project`,
+    remedy: {
+      by: 'cli',
+      summary: 'install the skill agents follow when deciding to notify',
+      command: 'notifai init --skills',
+    },
+  })
+
+  states.push(await setupProofState(deps, config, accountClient, accountDevices))
 
   return { states }
+}
+
+async function setupProofState(
+  deps: CommandDeps,
+  config: CliConfig,
+  client: ApiClient | null,
+  devices: RoutableDevice[] | null,
+): Promise<ReadinessState> {
+  if (client === null || devices === null) {
+    return {
+      id: 'proof',
+      title: 'Delivery proof',
+      status: 'unknown',
+      detail: 'not checked — account and device readiness must be established first',
+    }
+  }
+
+  const ready = devices.filter(deviceCanReceive)
+  if (ready.length === 0) {
+    return {
+      id: 'proof',
+      title: 'Delivery proof',
+      status: 'unknown',
+      detail: 'not checked — no companion device is ready',
+    }
+  }
+
+  const ios = readyIosDevices(devices)
+  if (ios.length === 0) {
+    return {
+      id: 'proof',
+      title: 'Delivery proof',
+      status: 'gap',
+      detail:
+        'blocked — the current macOS notification path does not emit Companion Receipts, so this CLI cannot prove receipt on a macOS-only setup',
+      remedy: {
+        by: 'user-elsewhere',
+        summary:
+          'pair a receipt-capable iPhone build; no supported macOS receipt bridge is available in this release',
+      },
+    }
+  }
+
+  const proof = readSetupProof(deps)
+  const target = proof === null ? null : ios.find((device) => device.device_id === proof.device_id)
+  if (proof === null || proof.project !== config.project.value || target === undefined) {
+    return {
+      id: 'proof',
+      title: 'Delivery proof',
+      status: 'gap',
+      detail: 'no Companion Receipt has proven this project on this machine yet',
+      remedy: {
+        by: 'cli',
+        summary: 'send one real verification notification and wait for its Companion Receipt',
+        command: 'notifai init',
+      },
+    }
+  }
+
+  try {
+    const snapshot = await client.evidence(proof.request_id)
+    const observed = observedCompanionReceipt(snapshot, proof.device_id)
+    if (observed) {
+      return {
+        id: 'proof',
+        title: 'Delivery proof',
+        status: 'ready',
+        detail: `Companion Receipt observed from ${observed.delivery.device_name} at ${observed.observedAt} (${proof.request_id})`,
+      }
+    }
+    return {
+      id: 'proof',
+      title: 'Delivery proof',
+      status: 'gap',
+      detail: `${proof.request_id} was sent, but its Companion Receipt is still unknown`,
+      remedy: {
+        by: 'cli',
+        summary: 'check the same verification notification again',
+        command: 'notifai init',
+      },
+    }
+  } catch (err) {
+    return {
+      id: 'proof',
+      title: 'Delivery proof',
+      status: 'gap',
+      detail: `could not read ${proof.request_id} evidence (${err instanceof ApiCallError ? err.code : String(err)})`,
+      remedy: {
+        by: 'cli',
+        summary: 'retry the existing verification evidence check',
+        command: 'notifai init',
+      },
+    }
+  }
 }
 
 export async function doctorCommand(deps: CommandDeps, flags: { json?: boolean }): Promise<number> {

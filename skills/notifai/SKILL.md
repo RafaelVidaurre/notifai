@@ -291,14 +291,27 @@ whose `overall` value is `provider_rejected_all` makes `send` exit 1. Other
 pre-receipt failures can also be nonzero, so branch on the structured result or
 the diagnostic rather than treating every exit 1 as the same failure.
 
+The send receipt reports queue/provider progress only. In `status`, Provider
+Acceptance and `companion_receipt` are separate fields: `observed` means a
+Companion App process or extension reported the Delivery, while `unknown`
+means no Companion Receipt has been observed. Unknown is not a timeout or a
+failure, no matter how many seconds have elapsed; Companion Receipts are
+best-effort and can arrive minutes later. Never infer display or human attention
+from either Provider Acceptance or a Companion Receipt.
+
 ## Setup in a new project
 
 `notifai init` is the setup coordinator to point the user at. It is idempotent
 for the setup it can perform, so re-running it is also a useful check. It covers
-sign-in, the project identifier, optional harness hooks, and device readiness.
-The current pre-release build has no published skill source: `--skills` fails
-cleanly instead of fetching an unpinned source, so this skill must already have
-been provided by the environment or installed separately.
+sign-in, the project identifier, optional harness hooks, device readiness, and
+one real verification notification. Setup becomes ready only after the CLI
+observes that notification's Companion Receipt; Provider Acceptance alone is
+not enough. The request id is saved in machine-local state, so a partial run
+rechecks the same notification instead of sending another one.
+`--skills` installs this skill from the immutable public `v0.1.2` tag. The
+source uses the skills installer's ref syntax
+`RafaelVidaurre/notifai#v0.1.2`; `owner/repo@name` means a skill selector, not
+a Git ref.
 
 It behaves differently depending on who runs it, on purpose:
 
@@ -308,10 +321,13 @@ It behaves differently depending on who runs it, on purpose:
   `notifai init` themselves over assembling the pieces for them.
 - **You, the agent** — it never prompts and never installs anything optional
   unattended. `--hooks` installs the harness hooks and `--no-hooks` silences
-  that hint. `--no-skills` silences the skill hint; in this pre-release build,
-  `--skills` reports that no published source is configured rather than making
-  a network request. It prints the steps only the user can do (signing in,
-  pairing a device) as exact commands — relay those instead of retrying.
+  that hint. `--no-skills` silences the skill hint; `--skills` explicitly
+  installs or updates the pinned public skill. It prints the steps only the user can do (signing in,
+  pairing a device) as exact commands — relay those instead of retrying. A
+  remaining blocker exits nonzero, so branch on the exit status rather than
+  parsing the prose. When every prerequisite is ready, the non-interactive path
+  may send the one receipt-backed setup verification; it never asks first or
+  sends a second notification while that request remains recorded.
   This is true of the CLI generally: interactive affordances only ever appear
   for a human at a TTY, and every operation has a non-interactive form. Do not
   deliberately seek out interactive paths; if a command seems to hang, you have
@@ -319,10 +335,18 @@ It behaves differently depending on who runs it, on purpose:
   interactivity).
 
 ```bash
-notifai init            # idempotent setup coordinator; add --hooks when unattended
+notifai init            # idempotent setup coordinator and receipt-backed live proof
 notifai hooks install   # just the hooks: route registered questions to their devices
-notifai doctor          # readiness audit: credential, server, devices, hooks; no live send
+notifai doctor          # readiness + saved-proof audit; never sends a probe
 ```
+
+When no Device Installation exists, the current release has no supported App
+Store/TestFlight URL or device-pairing endpoint for the CLI to turn into a QR
+code. `init` says that explicitly instead of printing a placeholder. If the
+user already has a supported companion build, interactive `init` can wait on
+the real device registry while they open it, sign in, and grant permission;
+unattended `init` reports that single action and exits nonzero without waiting
+on a prompt.
 
 `hooks install` wires the harness (Claude Code, Codex, Cursor, or OpenCode) so a
 question you registered with `notifai ask` reaches the user's devices after the
@@ -360,10 +384,12 @@ claim another harness is supported unless it appears in
 `notifai hooks install --help`.
 
 `notifai doctor` audits readiness without sending a probe: its checks cover the
-credential, server, contract version, devices, where hooks are installed,
+credential, server, contract version, devices, saved Companion Receipt proof,
+where hooks are installed,
 whether a session has run them here in the last 24 hours, and whether an old
 build left a stale handler behind. Network-dependent checks appear only when
-their prerequisites are reachable. It cannot prove live delivery. Run it before
+their prerequisites are reachable. It can re-read evidence for the verification
+request that `init` saved; it cannot create proof by itself. Run it before
 concluding that notifications are broken. If it reports a missing credential,
 the user must run `notifai login` themselves (it opens a browser approval).
 

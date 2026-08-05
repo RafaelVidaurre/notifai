@@ -6,7 +6,12 @@ import {
   REPLY_MAX_LENGTH,
   type Platform,
 } from './notification.js'
-import type { DeliveryState, OverallState, EvidenceStage } from './status.js'
+import type {
+  CompanionReceiptState,
+  DeliveryState,
+  OverallState,
+  EvidenceStage,
+} from './status.js'
 
 /** REST v1 wire contract shared by server, CLI, dashboard, and Companion App. */
 
@@ -167,12 +172,26 @@ export interface EvidenceEvent {
   occurred_at: string
 }
 
+/**
+ * Derived from the first Companion Receipt event for one Delivery. Unknown
+ * means only that no receipt has been observed; it is not a timeout or failure.
+ */
+export interface CompanionReceiptEvidence {
+  state: CompanionReceiptState
+  observed_at: string | null
+  /** First companion_received minus first provider_accepted, when both exist. */
+  latency_ms: number | null
+}
+
 export interface EvidenceSnapshot {
   request_id: string
   event: string | null
   accepted_at: string
   overall: OverallState
-  deliveries: (DeliveryOutcome & { events: EvidenceEvent[] })[]
+  deliveries: (DeliveryOutcome & {
+    companion_receipt: CompanionReceiptEvidence
+    events: EvidenceEvent[]
+  })[]
 }
 
 // ---------------------------------------------------------------------------

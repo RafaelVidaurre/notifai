@@ -67,6 +67,8 @@ export interface SessionState {
 export interface RetiringQuestion {
   request_id: string
   collapse_key: string
+  /** The Device Installations that actually received the question. */
+  device_ids: string[]
   /** Shown if the companion has no history entry to correlate against. */
   question: string
   state: LifecycleEndState
@@ -118,6 +120,8 @@ export interface PendingQuestion {
   /** Set once the question has actually been pushed, so it can be retired. */
   request_id?: string
   collapse_key?: string
+  /** Exact fanout of the live question; routing config may change afterwards. */
+  device_ids?: string[]
 }
 
 /** How often the grace window rechecks whether the user has come back. */
@@ -649,22 +653,54 @@ export function parkForRetirement(
   pending: PendingQuestion,
   state: LifecycleEndState,
 ): void {
-  if (pending.request_id === undefined || pending.collapse_key === undefined) return
+  const retirement = retiringQuestion(pending, state)
+  if (retirement === null) return
   const current = readSessionState(sessionId, env)
   const already = current.retiring ?? []
-  if (already.some((entry) => entry.request_id === pending.request_id)) return
+  if (already.some((entry) => entry.request_id === retirement.request_id)) return
   writeSessionState(sessionId, env, {
     ...current,
-    retiring: [
-      ...already,
-      {
-        request_id: pending.request_id,
-        collapse_key: pending.collapse_key,
-        question: pending.question,
-        state,
-      },
-    ],
+    retiring: [...already, retirement],
   })
+}
+
+/**
+ * Convert live question state into a complete retirement instruction.
+ *
+ * A request/collapse pair without the original Delivery targets is not safe to
+ * send: re-resolving today's routing can miss a device that still shows the
+ * question or retire a device that never received it. Fail explicitly and keep
+ * the pending record instead of silently broadening or narrowing the fanout.
+ */
+function retiringQuestion(
+  pending: PendingQuestion,
+  state: LifecycleEndState,
+): RetiringQuestion | null {
+  const hasRequest = pending.request_id !== undefined
+  const hasCollapse = pending.collapse_key !== undefined
+  const hasDevices = pending.device_ids !== undefined && pending.device_ids.length > 0
+  if (!hasRequest && !hasCollapse && !hasDevices) return null
+  if (!hasRequest || !hasCollapse || !hasDevices) {
+    throw new Error(
+      'live question state is incomplete; refusing to retire it without request, collapse, and device identifiers',
+    )
+  }
+  return {
+    request_id: pending.request_id!,
+    collapse_key: pending.collapse_key!,
+    device_ids: [...pending.device_ids!],
+    question: pending.question,
+    state,
+  }
+}
+
+function retirementDeviceIds(entry: RetiringQuestion): string[] {
+  if (!Array.isArray(entry.device_ids) || entry.device_ids.length === 0) {
+    throw new Error(
+      `retirement for ${entry.request_id} is missing its device identifiers; refusing to re-resolve routing`,
+    )
+  }
+  return entry.device_ids
 }
 
 /**
@@ -692,7 +728,7 @@ export async function drainRetirements(
       entry.question,
       entry.state,
       entry.request_id,
-      undefined,
+      retirementDeviceIds(entry),
       session,
     )
     if (sent) retired.push(entry.request_id)
@@ -777,7 +813,7 @@ export async function drainOrphanRetirements(
       entry.question,
       entry.state,
       entry.request_id,
-      undefined,
+      retirementDeviceIds(entry),
       entry.session,
     )
     if (sent) done.push(entry.request_id)
@@ -811,18 +847,19 @@ export async function handleUserPromptSubmit(
 
   const state = readSessionState(sessionId, ctx.env)
   const pending = state.pending
-  // Deliberately drops `pending` — the user is here, so the question is the
-  // terminal's now. `retiring` is carried across: it is the only record of
-  // notifications still live on the devices, and this reset used to erase it.
+  // Park before dropping `pending`. If the process dies between these writes,
+  // the next hook sees both copies and dedupes them; the old order could die in
+  // the gap after erasing the only request/collapse/device identifiers.
+  if (pending !== undefined) parkForRetirement(sessionId, ctx.env, pending, 'answered_elsewhere')
+  const parked = readSessionState(sessionId, ctx.env)
   writeSessionState(sessionId, ctx.env, {
     last_prompt_at: ctx.now(),
-    ...(state.retiring !== undefined ? { retiring: state.retiring } : {}),
+    ...(parked.retiring !== undefined ? { retiring: parked.retiring } : {}),
   })
   // The bridge that lets a plain `notifai ask` find its own session: an agent
   // shell command gets no hook payload and no harness exports the id.
   if (envelope.cwd !== undefined) writeProjectSession(envelope.cwd, ctx.env, sessionId, ctx.now())
 
-  if (pending !== undefined) parkForRetirement(sessionId, ctx.env, pending, 'answered_elsewhere')
   const retired = await drainRetirements(ctx, sessionId, ctx.env, sessionLabel(ctx, envelope))
   const orphaned = await drainOrphanRetirements(ctx, ctx.env, ctx.now())
   const swept = [...retired, ...orphaned]
@@ -938,7 +975,12 @@ async function escalate(
       // snapshot in `state` predates it.
       writeSessionState(sessionId, ctx.env, {
         ...readSessionState(sessionId, ctx.env),
-        pending: { ...pending, request_id: live.requestId, collapse_key: live.collapseKey },
+        pending: {
+          ...pending,
+          request_id: live.requestId,
+          collapse_key: live.collapseKey,
+          device_ids: live.devices,
+        },
       })
     },
   })
@@ -962,7 +1004,12 @@ async function escalate(
     // set is also what stops the next Stop pushing the same question again.
     writeSessionState(sessionId, ctx.env, {
       ...carried,
-      pending: { ...pending, request_id: asked.requestId, collapse_key: asked.collapseKey },
+      pending: {
+        ...pending,
+        request_id: asked.requestId,
+        collapse_key: asked.collapseKey,
+        device_ids: asked.devices,
+      },
     })
     notes.push(
       asked.degraded
@@ -1023,13 +1070,16 @@ export function handleSessionEnd(
   const state = readSessionState(sessionId, env)
   const orphans: RetiringQuestion[] = [...(state.retiring ?? [])]
   const pending = state.pending
-  if (pending?.request_id !== undefined && pending.collapse_key !== undefined) {
-    orphans.push({
-      request_id: pending.request_id,
-      collapse_key: pending.collapse_key,
-      question: pending.question,
-      state: 'expired',
-    })
+  if (pending !== undefined) {
+    try {
+      const orphan = retiringQuestion(pending, 'expired')
+      if (orphan !== null) orphans.push(orphan)
+    } catch (err) {
+      notes.push(err instanceof Error ? err.message : String(err))
+      // Preserve the only identifiers instead of turning an explicit corrupt
+      // state into an unretirable question during SessionEnd cleanup.
+      return { notes }
+    }
   }
   if (orphans.length > 0) {
     const label = env['NOTIFAI_SESSION']
