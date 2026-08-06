@@ -13,6 +13,7 @@ import { describe, expect, it } from 'vitest'
 import { ApiCallError, NetworkError, type ApiClient } from './client.js'
 import {
   askCommand,
+  accessStatusCommand,
   assessReadiness,
   capabilitiesCommand,
   configSetCommand,
@@ -163,6 +164,23 @@ function replyResponse(replies: ReplyView[] = []): ListRepliesResponse {
 }
 
 describe('command contracts', () => {
+  it('shows an actionable no-plan access state', async () => {
+    const io = new CapturedIo()
+    const client = {
+      accessStatus: async () => ({
+        status: 'no_active_plan',
+        reason: 'no_active_grant',
+        expires_at: null,
+      }),
+    } as unknown as ApiClient
+
+    expect(await accessStatusCommand(makeDeps(io, client), {})).toBe(EXIT.failed)
+    expect(io.outLines).toEqual([
+      'No active plan or temporary Alpha access for this account.',
+      'next: Ask a platform administrator to grant temporary Alpha access, then retry.',
+    ])
+  })
+
   it('renders capability field paths instead of array indexes', async () => {
     const io = new CapturedIo()
     const document: CapabilityDocument = {

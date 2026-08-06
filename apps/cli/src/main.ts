@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { Command } from 'commander'
 import {
   askCommand,
+  accessStatusCommand,
   authStatusCommand,
   capabilitiesCommand,
   closeCommand,
@@ -113,6 +114,13 @@ auth
   .option('--json', 'machine-readable output')
   .action((opts: { json?: boolean }) => {
     process.exit(authStatusCommand(deps, opts))
+  })
+auth
+  .command('access')
+  .description('Show the account plan and access decision')
+  .option('--json', 'machine-readable output')
+  .action(async (opts: { json?: boolean }) => {
+    process.exit(await accessStatusCommand(deps, opts))
   })
 
 program

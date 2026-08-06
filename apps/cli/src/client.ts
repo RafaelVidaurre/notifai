@@ -1,5 +1,6 @@
 import type {
   ApiErrorBody,
+  AccountAccessResponse,
   BeginPairingResponse,
   CapabilityDocument,
   CreateMediaUploadRequestT,
@@ -47,6 +48,7 @@ export interface ApiClient {
     poll_verifier_hash: string
   }): Promise<BeginPairingResponse>
   pollPairing(pairingId: string, pollVerifier: string): Promise<PollPairingResponse>
+  accessStatus(): Promise<AccountAccessResponse>
   listDevices(): Promise<ListDevicesResponse>
   capabilities(platform?: Platform): Promise<CapabilityDocument>
   submit(body: SubmitNotificationRequestT, waitSeconds: number): Promise<SubmissionReceipt>
@@ -138,6 +140,7 @@ export function createClient(
     beginPairing: (body) => call('POST', '/api/v1/pairings', body),
     pollPairing: (pairingId, pollVerifier) =>
       call('POST', `/api/v1/pairings/${pairingId}/poll`, { poll_verifier: pollVerifier }),
+    accessStatus: () => call('GET', '/api/v1/account/access'),
     listDevices: () => call('GET', '/api/v1/devices'),
     capabilities: (platform = 'ios') => call('GET', `/api/v1/capabilities/${platform}`),
     submit: (body, waitSeconds) =>

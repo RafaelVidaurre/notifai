@@ -9,6 +9,7 @@ import {
   REPLY_MAX_WINDOW_SECONDS,
   validateDraft,
   type EvidenceSnapshot,
+  type AccountAccessResponse,
   type ListRepliesResponse,
   type Platform,
   type ReplyView,
@@ -291,6 +292,33 @@ export function authStatusCommand(deps: CommandDeps, flags: { json?: boolean }):
   deps.io.out(`Server: ${credential.baseUrl}`)
   deps.io.out(`Credential store: ${deps.store.describe()}`)
   return EXIT.ok
+}
+
+/** Show the server's account access decision without attempting a product mutation. */
+export async function accessStatusCommand(
+  deps: CommandDeps,
+  flags: { json?: boolean },
+): Promise<number> {
+  const config = loadConfig({ cwd: deps.cwd, env: deps.env })
+  const authed = authedClient(deps, config)
+  if (!authed) return EXIT.auth
+  try {
+    const access: AccountAccessResponse = await authed.client.accessStatus()
+    if (flags.json) {
+      deps.io.out(JSON.stringify(access, null, 2))
+      return access.status === 'active' ? EXIT.ok : EXIT.failed
+    }
+    if (access.status === 'no_active_plan') {
+      deps.io.out('No active plan or temporary Alpha access for this account.')
+      deps.io.out('next: Ask a platform administrator to grant temporary Alpha access, then retry.')
+      return EXIT.failed
+    }
+    const expiry = access.expires_at ? ` until ${access.expires_at}` : ''
+    deps.io.out(`Access active (${access.reason})${expiry}`)
+    return EXIT.ok
+  } catch (err) {
+    return reportError(deps, err)
+  }
 }
 
 // ---------------------------------------------------------------------------

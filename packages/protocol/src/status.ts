@@ -69,6 +69,8 @@ export function summarizeOverall(states: readonly DeliveryState[]): OverallState
 
 export const ERROR_CODES = [
   'auth_required',
+  /** The account shell is authenticated but has no active product access. */
+  'no_active_plan',
   'machine_revoked',
   'no_active_devices',
   'unknown_device',

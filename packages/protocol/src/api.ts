@@ -16,6 +16,35 @@ import type {
 /** REST v1 wire contract shared by server, CLI, dashboard, and Companion App. */
 
 // ---------------------------------------------------------------------------
+// Account access (the account shell is not product access)
+// ---------------------------------------------------------------------------
+
+/**
+ * Stable access state returned to every authenticated client. `active` is
+ * intentionally separate from the reason so later subscription and durable
+ * payment-exemption decisions can extend the source without changing the
+ * no-plan boundary or making Alpha look permanent.
+ */
+export const ACCESS_STATUSES = ['no_active_plan', 'active'] as const
+export type AccountAccessStatus = (typeof ACCESS_STATUSES)[number]
+
+/** Current Alpha source plus explicit slots for later paid V1 sources. */
+export const ACCESS_REASONS = [
+  'no_active_grant',
+  'alpha_grant',
+  'subscription',
+  'payment_exemption',
+] as const
+export type AccountAccessReason = (typeof ACCESS_REASONS)[number]
+
+export interface AccountAccessResponse {
+  status: AccountAccessStatus
+  reason: AccountAccessReason
+  /** Alpha grants are temporary; future sources may also carry an expiry. */
+  expires_at: string | null
+}
+
+// ---------------------------------------------------------------------------
 // Machine pairing (Machine Access seam)
 // ---------------------------------------------------------------------------
 
