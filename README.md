@@ -50,5 +50,9 @@ The CLI binary builds to `apps/cli/dist/main.js`.
 The NotifAI agent guidance skill lives in `skills/notifai/` and is never
 installed by default. `notifai init` coordinates project configuration,
 sign-in, optional harness hooks, and device readiness. `notifai init --skills`
-installs the skill from the immutable public tag `v0.1.7`; the underlying
-installer source is `RafaelVidaurre/notifai#v0.1.7` (`#` selects a Git ref).
+delegates to the native `npx skills` flow, which lets a human choose project or
+global scope and owns placement, links, provenance, and updates. The skill is
+from the immutable public tag `v0.1.7`; the underlying installer source is
+`RafaelVidaurre/notifai#v0.1.7` (`#` selects a Git ref). For unattended use,
+choose the scope explicitly: `notifai init --skills --skills-scope project` or
+`notifai init --skills --skills-scope global`.

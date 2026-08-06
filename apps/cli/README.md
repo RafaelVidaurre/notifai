@@ -15,6 +15,12 @@ notifai init
 `init` walks the setup one step at a time and tells you the single next
 thing to do. Run it again after each step; it works out what remains.
 
+When `--skills` is selected at a human terminal, `init` runs the native
+`npx skills` flow so that flow can ask whether the skill belongs to the
+project or the machine. An unattended caller must select one explicitly:
+`notifai init --skills --skills-scope project` or
+`notifai init --skills --skills-scope global`.
+
 ## Telling you something happened
 
 ```sh

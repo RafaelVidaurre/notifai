@@ -35,6 +35,7 @@ import {
   type CommandSpinner,
 } from './commands.js'
 import { applyPlan, buildHookConfig } from './install-hooks.js'
+import type { NativeSkill, NativeSkills, SkillScope } from './native-skills.js'
 
 class CapturedIo implements CommandIo {
   outLines: string[] = []
@@ -1013,6 +1014,47 @@ describe('init', () => {
     }
   }
 
+  function managedSkill(scope: SkillScope, cwd: string): NativeSkill {
+    return {
+      name: 'notifai',
+      scope,
+      path: path.join(cwd, '.agents', 'skills', 'notifai'),
+      source: 'RafaelVidaurre/notifai',
+      sourceType: 'github',
+      sourceUrl: 'https://github.com/RafaelVidaurre/notifai.git',
+      ref: 'v0.1.7',
+    }
+  }
+
+  function setupReadyDeps(
+    io: CapturedIo,
+    cwd: string,
+    nativeSkills: NativeSkills,
+    calls: { submit: number },
+  ): CommandDeps {
+    const client = {
+      health: async () => true,
+      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+      listDevices: async () => ({ devices: [readyIphone] }),
+      submit: async () => {
+        calls.submit += 1
+        return setupReceipt()
+      },
+      evidence: async () =>
+        setupEvidence('req_setup', {
+          state: 'observed',
+          observed_at: '2026-08-05T18:00:02.000Z',
+          latency_ms: 1_000,
+        }),
+    } as unknown as ApiClient
+    return {
+      ...makeDeps(io, client),
+      cwd,
+      env: { XDG_CONFIG_HOME: path.join(cwd, 'config'), XDG_STATE_HOME: path.join(cwd, 'state') },
+      nativeSkills,
+    }
+  }
+
   it('writes the project identifier into .notifai/config.toml and is idempotent', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'My Project-'))
     const io = new CapturedIo()
@@ -1088,37 +1130,193 @@ describe('init', () => {
 
   it('recognizes a skill installed from the exact immutable release', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-pinned-skill-'))
-    mkdirSync(path.join(cwd, '.agents', 'skills', 'notifai'), { recursive: true })
-    writeFileSync(path.join(cwd, '.agents', 'skills', 'notifai', 'SKILL.md'), '# notifai\n')
-    writeFileSync(
-      path.join(cwd, 'skills-lock.json'),
-      `${JSON.stringify(
-        {
-          version: 1,
-          skills: {
-            notifai: {
-              source: 'RafaelVidaurre/notifai',
-              ref: 'v0.1.7',
-              sourceType: 'github',
-              skillPath: 'skills/notifai/SKILL.md',
-            },
-          },
-        },
-        null,
-        2,
-      )}\n`,
-    )
     const io = new CapturedIo()
     const client = {
       health: async () => true,
       capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
       listDevices: async () => ({ devices: [] }),
     } as unknown as ApiClient
-    const readiness = await assessReadiness({ ...makeDeps(io, client), cwd })
+    const nativeSkills: NativeSkills = {
+      add: async () => 0,
+      list: async (scope) => ({
+        skills: [
+          {
+            name: 'notifai',
+            scope,
+            path: path.join(cwd, '.agents', 'skills', 'notifai'),
+            source: 'RafaelVidaurre/notifai',
+            sourceType: 'github',
+            sourceUrl: 'https://github.com/RafaelVidaurre/notifai.git',
+            ref: 'v0.1.7',
+          },
+        ],
+      }),
+    }
+    const readiness = await assessReadiness(
+      { ...makeDeps(io, client), cwd, nativeSkills },
+      { skillScope: 'project' },
+    )
     expect(readiness.states.find((state) => state.id === 'skill')).toMatchObject({
       status: 'ready',
-      detail: `installed from ${SKILLS_SOURCE} in this project`,
+      detail: `installed from ${SKILLS_SOURCE} in the project scope`,
     })
+  })
+
+  it.each(['project', 'global'] as const)(
+    'recognizes native installer provenance in the selected %s scope',
+    async (scope) => {
+      const cwd = mkdtempSync(path.join(os.tmpdir(), `init-managed-${scope}-`))
+      const io = new CapturedIo()
+      const client = {
+        health: async () => true,
+        capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+        listDevices: async () => ({ devices: [] }),
+      } as unknown as ApiClient
+      const calls: SkillScope[] = []
+      const nativeSkills: NativeSkills = {
+        add: async () => 0,
+        list: async (selected) => {
+          calls.push(selected)
+          return { skills: [managedSkill(selected, cwd)] }
+        },
+      }
+
+      const readiness = await assessReadiness(
+        { ...makeDeps(io, client), cwd, nativeSkills },
+        { skillScope: scope },
+      )
+      expect(readiness.states.find((state) => state.id === 'skill')).toMatchObject({
+        status: 'ready',
+        detail: `installed from ${SKILLS_SOURCE} in the ${scope} scope`,
+      })
+      expect(calls).toEqual([scope])
+    },
+  )
+
+  it.each(['project', 'global'] as const)(
+    'does not trust unmanaged same-path content in the %s scope',
+    async (scope) => {
+      const cwd = mkdtempSync(path.join(os.tmpdir(), `init-unmanaged-${scope}-`))
+      const io = new CapturedIo()
+      const client = {
+        health: async () => true,
+        capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+        listDevices: async () => ({ devices: [] }),
+      } as unknown as ApiClient
+      const nativeSkills: NativeSkills = {
+        add: async () => 0,
+        list: async (selected) => ({
+          skills: [{ ...managedSkill(selected, cwd), source: null, sourceType: null, ref: null }],
+        }),
+      }
+
+      const readiness = await assessReadiness(
+        { ...makeDeps(io, client), cwd, nativeSkills },
+        { skillScope: scope },
+      )
+      expect(readiness.states.find((state) => state.id === 'skill')).toMatchObject({
+        status: 'optional-gap',
+        detail: `not installed from ${SKILLS_SOURCE} in ${scope} scope`,
+      })
+    },
+  )
+
+  it('requires an explicit skill scope before unattended installation', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-skill-scope-required-'))
+    const io = new CapturedIo()
+    let addCalls = 0
+    const nativeSkills: NativeSkills = {
+      add: async () => {
+        addCalls += 1
+        return 0
+      },
+      list: async () => ({ skills: [] }),
+    }
+
+    expect(await initCommand({ ...makeDeps(io, {} as ApiClient), cwd, nativeSkills }, { skills: true })).toBe(
+      EXIT.usage,
+    )
+    expect(addCalls).toBe(0)
+    expect(io.errLines.join('\n')).toContain('--skills-scope project')
+  })
+
+  it('rejects an invalid unattended skill scope instead of guessing', async () => {
+    const io = new CapturedIo()
+    expect(
+      await initCommand(
+        { ...makeDeps(io, {} as ApiClient), cwd: mkdtempSync(path.join(os.tmpdir(), 'init-skill-invalid-')) },
+        { skills: true, skillsScope: 'machine' as SkillScope },
+      ),
+    ).toBe(EXIT.usage)
+    expect(io.errLines.join('\n')).toContain('Choose `project` or `global`')
+  })
+
+  it.each(['project', 'global'] as const)(
+    'passes an unattended %s choice to the native installer and continues setup',
+    async (scope) => {
+      const cwd = mkdtempSync(path.join(os.tmpdir(), `init-skill-${scope}-`))
+      const io = new CapturedIo()
+      const calls: { submit: number } = { submit: 0 }
+      let installed = false
+      let receivedScope: SkillScope | undefined
+      const nativeSkills: NativeSkills = {
+        add: async (options) => {
+          receivedScope = options.scope
+          installed = true
+          return 0
+        },
+        list: async (selected) => ({
+          skills: installed && selected === scope ? [managedSkill(scope, cwd)] : [],
+        }),
+      }
+
+      const result = await initCommand(
+        setupReadyDeps(io, cwd, nativeSkills, calls),
+        { skills: true, skillsScope: scope, hooks: false },
+      )
+      expect(result).toBe(EXIT.ok)
+      expect(receivedScope).toBe(scope)
+      expect(calls.submit).toBe(1)
+      expect(io.outLines.join('\n')).toContain('All set.')
+    },
+  )
+
+  it('lets the native interactive flow choose scope and resumes after cancellation', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-skill-cancelled-'))
+    const io = new InteractiveIo()
+    const calls: { submit: number } = { submit: 0 }
+    let receivedScope: SkillScope | undefined = 'global'
+    const nativeSkills: NativeSkills = {
+      add: async (options) => {
+        receivedScope = options.scope
+        return 0
+      },
+      list: async () => ({ skills: [] }),
+    }
+
+    expect(await initCommand(setupReadyDeps(io, cwd, nativeSkills, calls), { skills: true, hooks: false })).toBe(
+      EXIT.ok,
+    )
+    expect(receivedScope).toBeUndefined()
+    expect(calls.submit).toBe(1)
+    expect(io.outLines.join('\n')).toContain('All set.')
+  })
+
+  it('reports an optional native installer failure without blocking remaining setup', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-skill-failed-'))
+    const io = new InteractiveIo()
+    const calls: { submit: number } = { submit: 0 }
+    const nativeSkills: NativeSkills = {
+      add: async () => 1,
+      list: async () => ({ skills: [] }),
+    }
+
+    expect(await initCommand(setupReadyDeps(io, cwd, nativeSkills, calls), { skills: true, hooks: false })).toBe(
+      EXIT.failed,
+    )
+    expect(calls.submit).toBe(1)
+    expect(io.errLines.join('\n')).toContain('Skill installation failed')
+    expect(io.outLines.join('\n')).toContain('All set.')
   })
 
   it('tells the user what only they can do when nothing is signed in', async () => {

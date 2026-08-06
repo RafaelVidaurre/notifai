@@ -27,12 +27,14 @@ import {
 } from './commands.js'
 import { defaultCredentialStore } from './credentials.js'
 import type { Platform } from '@raidiant/notifai-protocol'
+import { nativeSkills, type SkillScope } from './native-skills.js'
 
 const deps: CommandDeps = {
   io: realIo(),
   store: defaultCredentialStore(),
   env: process.env,
   cwd: process.cwd(),
+  nativeSkills,
 }
 
 /**
@@ -329,9 +331,10 @@ program
   .option('--project-id <id>', 'project identifier slug (default: derived from the directory name)')
   .option('--skills', 'install/update the agent skill from its pinned public release')
   .option('--no-skills', 'suppress the optional agent-skill status line')
+  .option('--skills-scope <scope>', 'unattended skill scope: project or global')
   .option('--hooks', 'install harness hooks for registered-question routing')
   .option('--no-hooks', 'skip the hooks without being asked')
-  .action(async (opts: { projectId?: string; skills?: boolean; hooks?: boolean }) => {
+  .action(async (opts: { projectId?: string; skills?: boolean; skillsScope?: SkillScope; hooks?: boolean }) => {
     process.exit(await initCommand(deps, opts))
   })
 

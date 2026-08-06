@@ -86,6 +86,7 @@ import {
   receiptExitCode,
   type SendFlags,
 } from './send.js'
+import type { NativeSkill, NativeSkills, SkillScope } from './native-skills.js'
 
 export interface CommandIo {
   out(line: string): void
@@ -128,6 +129,8 @@ export interface CommandDeps {
   sleep?: (milliseconds: number) => Promise<void>
   /** Test seam for the OS idle probe; production shells out to the platform. */
   idleSeconds?: () => number | null
+  /** Test seam and production adapter for the external native skills installer. */
+  nativeSkills?: NativeSkills
 }
 
 export const EXIT = {
@@ -1483,25 +1486,67 @@ export async function configSetCommand(
  */
 export const SKILLS_SOURCE = 'RafaelVidaurre/notifai#v0.1.7'
 
-function pinnedSkillInstalled(cwd: string): boolean {
+function skillSourceParts(): { source: string; ref: string } | null {
   const match = /^([^#]+)#(.+)$/.exec(SKILLS_SOURCE)
-  if (!match) return false
-  const lockPath = path.join(cwd, 'skills-lock.json')
-  const installedPath = path.join(cwd, '.agents', 'skills', 'notifai', 'SKILL.md')
-  if (!existsSync(lockPath) || !existsSync(installedPath)) return false
-  try {
-    const parsed = JSON.parse(readFileSync(lockPath, 'utf8')) as {
-      skills?: Record<string, { source?: unknown; ref?: unknown; skillPath?: unknown }>
+  return match === null ? null : { source: match[1]!, ref: match[2]! }
+}
+
+function expectedSkill(skill: NativeSkill): boolean {
+  const expected = skillSourceParts()
+  return (
+    expected !== null &&
+    skill.name === 'notifai' &&
+    skill.source === expected.source &&
+    skill.sourceType === 'github' &&
+    skill.ref === expected.ref
+  )
+}
+
+async function skillReadiness(
+  deps: CommandDeps,
+  selectedScope?: SkillScope,
+): Promise<ReadinessState> {
+  const scopes: SkillScope[] = selectedScope === undefined ? ['project', 'global'] : [selectedScope]
+  const results = await Promise.all(
+    scopes.map(async (scope) => {
+      if (deps.nativeSkills === undefined) return { scope, skills: [] as NativeSkill[] }
+      try {
+        return { scope, ...(await deps.nativeSkills.list(scope, deps.cwd, deps.env)) }
+      } catch (err) {
+        return { scope, skills: [] as NativeSkill[], error: String(err) }
+      }
+    }),
+  )
+  const installed = results.flatMap(({ skills }) => skills).find(expectedSkill)
+  if (installed !== undefined) {
+    return {
+      id: 'skill',
+      title: 'Agent guidance skill',
+      status: 'ready',
+      detail: `installed from ${SKILLS_SOURCE} in the ${installed.scope} scope`,
     }
-    const skill = parsed.skills?.notifai
-    if (!skill) return false
-    return (
-      skill.source === match[1] &&
-      skill.ref === match[2] &&
-      skill.skillPath === 'skills/notifai/SKILL.md'
-    )
-  } catch {
-    return false
+  }
+
+  const errors = results
+    .filter((result) => result.error !== undefined)
+    .map((result) => `${result.scope}: ${result.error}`)
+  const scopeText = selectedScope === undefined ? 'project or machine-global scope' : `${selectedScope} scope`
+  return {
+    id: 'skill',
+    title: 'Agent guidance skill',
+    status: 'optional-gap',
+    detail:
+      errors.length > 0
+        ? `could not verify installer-managed state in ${scopeText} (${errors.join('; ')})`
+        : `not installed from ${SKILLS_SOURCE} in ${scopeText}`,
+    remedy: {
+      by: 'cli',
+      summary: 'install the skill agents follow when deciding to notify',
+      command:
+        selectedScope === undefined
+          ? 'notifai init --skills'
+          : `notifai init --skills --skills-scope ${selectedScope}`,
+    },
   }
 }
 
@@ -1524,6 +1569,8 @@ export interface InitFlags {
    * never spawn npx against the network by default.
    */
   skills?: boolean
+  /** Scope selected by an unattended caller; humans choose inside npx skills. */
+  skillsScope?: SkillScope
   /** Same tri-state, for the harness hooks. */
   hooks?: boolean
 }
@@ -1652,18 +1699,27 @@ async function closeGap(
   }
 
   if (state.id === 'skill') {
-    deps.io.out(`Installing the notifai agent skill (npx skills add ${SKILLS_SOURCE})...`)
-    const code = await new Promise<number>((resolve) => {
-      const child = spawn('npx', ['-y', 'skills', 'add', SKILLS_SOURCE, '--skill', 'notifai'], {
-        cwd: deps.cwd,
-        stdio: 'inherit',
-      })
-      child.on('error', () => resolve(1))
-      child.on('exit', (exitCode) => resolve(exitCode ?? 1))
-    })
+    if (deps.nativeSkills === undefined) {
+      deps.io.err('Skill installation failed — the native `npx skills` flow is unavailable.')
+      return 'failed'
+    }
+    const scopeText = flags.skillsScope === undefined ? 'the scope you choose' : `${flags.skillsScope} scope`
+    deps.io.out(`Starting the native npx skills setup for the notifai agent skill (${scopeText})...`)
+    const addOptions = {
+      source: SKILLS_SOURCE,
+      skill: 'notifai',
+      cwd: deps.cwd,
+      env: deps.env,
+      ...(flags.skillsScope === undefined ? {} : { scope: flags.skillsScope }),
+    }
+    const code = await deps.nativeSkills.add(addOptions)
     if (code !== 0) {
       deps.io.err('Skill installation failed — run it manually with:')
-      deps.io.err(`  npx skills add ${SKILLS_SOURCE} --skill notifai`)
+      deps.io.err(
+        `  npx skills add ${SKILLS_SOURCE} --skill notifai${
+          flags.skillsScope === 'global' ? ' --global' : ''
+        }${flags.skillsScope === undefined ? '' : ' --yes'}`,
+      )
     }
     return code === 0 ? 'closed' : 'failed'
   }
@@ -1938,7 +1994,7 @@ function wantsOptional(deps: CommandDeps, state: ReadinessState, flags: InitFlag
   const question =
     state.id === 'hooks'
       ? 'Install harness hooks, so questions reach your devices when you are away?'
-      : 'Install/update the agent guidance skill in this repo?'
+      : 'Install/update the agent guidance skill through the native npx skills flow?'
   return deps.io.confirm(question, true)
 }
 
@@ -1959,9 +2015,36 @@ function wantsOptional(deps: CommandDeps, state: ReadinessState, flags: InitFlag
  * states rather than four branches to enumerate.
  */
 export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<number> {
+  if (
+    flags.skillsScope !== undefined &&
+    flags.skillsScope !== 'project' &&
+    flags.skillsScope !== 'global'
+  ) {
+    deps.io.err('Invalid skill scope. Choose `project` or `global`.')
+    return EXIT.usage
+  }
+  if (flags.skillsScope !== undefined && flags.skills !== true) {
+    deps.io.err('`--skills-scope` requires `--skills`. Choose project or global in the native installer.')
+    return EXIT.usage
+  }
+  if (
+    flags.skills === true &&
+    deps.io.interactive !== true &&
+    flags.skillsScope === undefined
+  ) {
+    deps.io.err(
+      'Unattended skill setup requires an explicit scope: `notifai init --skills --skills-scope project` or `... global`.',
+    )
+    return EXIT.usage
+  }
   await deps.io.intro?.('NotifAI setup')
 
-  let readiness = await assessReadiness(deps)
+  const reassess = () =>
+    assessReadiness(
+      deps,
+      flags.skillsScope === undefined ? {} : { skillScope: flags.skillsScope },
+    )
+  let readiness = await reassess()
   let failed = false
   const attempted = new Set<string>()
 
@@ -1991,11 +2074,16 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
         attempted.add(state.id)
         const result = await closeGap(deps, state, flags)
         if (result === 'failed') failed = true
+        if (result === 'failed' && state.status === 'optional-gap') {
+          readiness = await reassess()
+          advanced = true
+          break
+        }
         if (result !== 'closed') {
           stop = true
           break
         }
-        readiness = await assessReadiness(deps)
+        readiness = await reassess()
         advanced = true
         break
       }
@@ -2008,7 +2096,7 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
           stop = true
           break
         }
-        readiness = await assessReadiness(deps)
+        readiness = await reassess()
         advanced = true
         break
       }
@@ -2031,7 +2119,7 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
           stop = true
           break
         }
-        readiness = await assessReadiness(deps)
+        readiness = await reassess()
         advanced = true
         break
       }
@@ -2048,7 +2136,7 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
           stop = true
           break
         }
-        readiness = await assessReadiness(deps)
+        readiness = await reassess()
         advanced = true
         break
       }
@@ -2061,14 +2149,16 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
     if (stop || !advanced) break
   }
 
-  readiness = await assessReadiness(deps)
+  readiness = await reassess()
   for (const state of readiness.states.filter((s) => s.status === 'ready')) {
     deps.io.out(`${state.title}: ${state.detail}`)
   }
 
   const blocker = firstBlocker(readiness)
   if (blocker === null) {
-    const skipped = openItems(readiness)
+    const skipped = openItems(readiness).filter(
+      (state) => !(state.id === 'skill' && flags.skills === false),
+    )
     for (const state of skipped) deps.io.out(`Optional, not set up — ${remedyLine(state)}`)
     deps.io.out('All set. Agents in this project can notify you and ask questions.')
     await deps.io.outro?.('All set ✨')
@@ -2143,7 +2233,10 @@ async function contractCheck(client: ApiClient): Promise<{ name: string; ok: boo
  * `unknown`, which is the honest answer and keeps a network outage from
  * looking like a broken install.
  */
-export async function assessReadiness(deps: CommandDeps): Promise<Readiness> {
+export async function assessReadiness(
+  deps: CommandDeps,
+  options: { skillScope?: SkillScope } = {},
+): Promise<Readiness> {
   const config = loadConfig({ cwd: deps.cwd, env: deps.env })
   const states: ReadinessState[] = []
   let accountClient: ApiClient | null = null
@@ -2320,26 +2413,7 @@ export async function assessReadiness(deps: CommandDeps): Promise<Readiness> {
 
   states.push(...hookStates(deps))
 
-  states.push(
-    pinnedSkillInstalled(deps.cwd)
-      ? {
-          id: 'skill',
-          title: 'Agent guidance skill',
-          status: 'ready',
-          detail: `installed from ${SKILLS_SOURCE} in this project`,
-        }
-      : {
-          id: 'skill',
-          title: 'Agent guidance skill',
-          status: 'optional-gap',
-          detail: `not installed from ${SKILLS_SOURCE} in this project`,
-          remedy: {
-            by: 'cli',
-            summary: 'install the skill agents follow when deciding to notify',
-            command: 'notifai init --skills',
-          },
-        },
-  )
+  states.push(await skillReadiness(deps, options.skillScope))
 
   states.push(await setupProofState(deps, config, accountClient, accountDevices))
 

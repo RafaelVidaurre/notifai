@@ -311,7 +311,9 @@ rechecks the same notification instead of sending another one.
 `--skills` installs this skill from the immutable public `v0.1.7` tag. The
 source uses the skills installer's ref syntax
 `RafaelVidaurre/notifai#v0.1.7`; `owner/repo@name` means a skill selector, not
-a Git ref.
+a Git ref. In an interactive init, the native `npx skills` UI owns the
+project-local versus machine-global choice, placement, links, provenance, and
+updates; `notifai` waits for it and then resumes the remaining setup.
 
 It behaves differently depending on who runs it, on purpose:
 
@@ -320,10 +322,14 @@ It behaves differently depending on who runs it, on purpose:
   can approve). When setup is needed, prefer telling the user to run
   `notifai init` themselves over assembling the pieces for them.
 - **You, the agent** — it never prompts and never installs anything optional
-  unattended. `--hooks` installs the harness hooks and `--no-hooks` silences
-  that hint. `--no-skills` silences the skill hint; `--skills` explicitly
-  installs or updates the pinned public skill. It prints the steps only the user can do (signing in,
-  pairing a device) as exact commands — relay those instead of retrying. A
+  unattended without an explicit choice. `--hooks` installs the harness hooks
+  and `--no-hooks` silences that hint. `--no-skills` silences the skill hint;
+  `--skills` requires `--skills-scope project` or `--skills-scope global`, then
+  delegates the non-interactive install/update to native `npx skills`. It never
+  turns a user's personal machine-global preference into a product default. It
+  prints the steps only the user can do (signing in, pairing a device) as exact
+  commands — relay those instead of retrying. Cancellation or an optional skill
+  failure is reported, but does not stop independent remaining setup. A
   remaining blocker exits nonzero, so branch on the exit status rather than
   parsing the prose. When every prerequisite is ready, the non-interactive path
   may send the one receipt-backed setup verification; it never asks first or
