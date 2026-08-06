@@ -22,6 +22,14 @@ repository. Everything the CLI sends and receives crosses the documented
 depends on private code. `docs/BOUNDARY.md` states the policy and
 `pnpm check:boundary` enforces the mechanical part of it.
 
+## Companion App installation
+
+Private Alpha Companion Apps are distributed only through controlled TestFlight
+invitations. Open the invitation on the iPhone or Mac you want to use, install
+Apple's TestFlight app, install NotifAI, then open it once, sign in with the same
+account as the CLI, and allow notifications. There is no public App Store link
+or public TestFlight link for the Private Alpha.
+
 ## Status
 
 NotifAI is pre-1.0 and published under Apache-2.0. The current packages are

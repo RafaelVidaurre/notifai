@@ -2380,13 +2380,13 @@ export async function assessReadiness(
               // permission prompt.
               detail:
                 devices.length === 0
-                  ? 'nothing registered yet; this release has no supported App Store/TestFlight URL for the CLI to open'
+                  ? 'nothing registered yet; invited Alpha testers install NotifAI from their private TestFlight invitation on iPhone or Mac'
                   : `${devices.map((d) => `${d.display_name} (${d.permission_status})`).join(', ')} — registered but not able to receive`,
               remedy: {
                 by: 'user-elsewhere',
                 summary:
                   devices.length === 0
-                    ? 'install NotifAI through a supported distribution you already have, open it, sign in with the same account, and allow notifications'
+                    ? 'open your NotifAI TestFlight invitation on that device, install the app, sign in with the same account, and allow notifications'
                     : devices.some((d) => d.permission_status === 'denied')
                       ? 'allow notifications for NotifAI in that device’s system settings'
                       : 'open NotifAI on that device and allow its notification prompt',

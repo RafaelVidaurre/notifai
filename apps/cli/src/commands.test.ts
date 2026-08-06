@@ -1393,8 +1393,8 @@ describe('init', () => {
     expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.failed)
     const out = io.outLines.join('\n')
     expect(out).toContain('Next: Your devices')
-    expect(out).toContain('no supported App Store/TestFlight URL')
-    expect(out).toContain('open it, sign in with the same account, and allow notifications')
+    expect(out).toContain('private TestFlight invitation on iPhone or Mac')
+    expect(out).toContain('open your NotifAI TestFlight invitation on that device')
     expect(out.match(/^Next:/gm)).toHaveLength(1)
   })
 
