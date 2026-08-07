@@ -1022,7 +1022,7 @@ describe('init', () => {
       source: 'RafaelVidaurre/notifai',
       sourceType: 'github',
       sourceUrl: 'https://github.com/RafaelVidaurre/notifai.git',
-      ref: 'v0.1.7',
+      ref: 'v0.1.8',
     }
   }
 
@@ -1124,7 +1124,7 @@ describe('init', () => {
   })
 
   it('pins the skill installer to the tagged public release syntax', () => {
-    expect(SKILLS_SOURCE).toBe('RafaelVidaurre/notifai#v0.1.7')
+    expect(SKILLS_SOURCE).toBe('RafaelVidaurre/notifai#v0.1.8')
     expect(SKILLS_SOURCE).not.toContain('@v')
   })
 
@@ -1147,7 +1147,7 @@ describe('init', () => {
             source: 'RafaelVidaurre/notifai',
             sourceType: 'github',
             sourceUrl: 'https://github.com/RafaelVidaurre/notifai.git',
-            ref: 'v0.1.7',
+            ref: 'v0.1.8',
           },
         ],
       }),
