@@ -7,7 +7,7 @@ repository.
 
 ## What lives here
 
-This repository is the **client surface** of NotifAI: the `notifai` CLI,
+This repository is the **client surface** of Notifai: the `notifai` CLI,
 the wire contract it speaks, and the agent skill. The service and the
 companion apps are developed separately and are not part of this tree.
 

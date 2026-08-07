@@ -1,4 +1,4 @@
-# NotifAI
+# Notifai
 
 `notifai` lets software agents and local programs send native device
 notifications to their user — completion notices, answerable questions, and
@@ -16,7 +16,7 @@ This repository is the public home of:
 - **`skills/notifai`** — the agent guidance skill: when to notify and how
   to write notifications that work on a lock screen.
 
-The NotifAI service, companion apps, and their deployment live in a private
+The Notifai service, companion apps, and their deployment live in a private
 repository. Everything the CLI sends and receives crosses the documented
 `/api/v1` contract in `packages/protocol`; nothing in this repository
 depends on private code. `docs/BOUNDARY.md` states the policy and
@@ -26,13 +26,13 @@ depends on private code. `docs/BOUNDARY.md` states the policy and
 
 Private Alpha Companion Apps are distributed only through controlled TestFlight
 invitations. Open the invitation on the iPhone or Mac you want to use, install
-Apple's TestFlight app, install NotifAI, then open it once, sign in with the same
+Apple's TestFlight app, install Notifai, then open it once, sign in with the same
 account as the CLI, and allow notifications. There is no public App Store link
 or public TestFlight link for the Private Alpha.
 
 ## Status
 
-NotifAI is pre-1.0 and published under Apache-2.0. The current packages are
+Notifai is pre-1.0 and published under Apache-2.0. The current packages are
 `@raidiant/notifai` 0.1.7 and `@raidiant/notifai-protocol` 0.1.1; their
 versions advance independently. Only the latest published version is
 supported.
@@ -55,7 +55,7 @@ The CLI binary builds to `apps/cli/dist/main.js`.
 
 ## The agent skill
 
-The NotifAI agent guidance skill lives in `skills/notifai/` and is never
+The Notifai agent guidance skill lives in `skills/notifai/` and is never
 installed by default. `notifai init` coordinates project configuration,
 sign-in, optional harness hooks, and device readiness. `notifai init --skills`
 delegates to the native `npx skills` flow, which lets a human choose project or

@@ -460,7 +460,7 @@ describe('Cursor stop output', () => {
     expect(h.io.outLines).toHaveLength(1)
     const output = JSON.parse(h.io.outLines[0] ?? '{}') as Record<string, unknown>
     expect(output['followup_message']).toContain(
-      'NotifAI — the user answered from Furankuphone: "Ship it". Continue with that answer.',
+      'Notifai — the user answered from Furankuphone: "Ship it". Continue with that answer.',
     )
     expect(output).not.toHaveProperty('decision')
   })

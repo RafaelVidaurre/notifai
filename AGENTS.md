@@ -1,6 +1,6 @@
 # Agent Instructions
 
-This repository is the public client surface of NotifAI: the `notifai` CLI
+This repository is the public client surface of Notifai: the `notifai` CLI
 (`apps/cli`), the client-visible wire contract (`packages/protocol`), and the
 agent guidance skill (`skills/notifai`). The service, companion apps, and
 their operations live in a private repository. These instructions apply

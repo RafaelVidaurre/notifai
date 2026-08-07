@@ -9,7 +9,7 @@ coverage/
 .env.*
 !.env.example
 
-# Local NotifAI project configuration written by `notifai init`
+# Local Notifai project configuration written by `notifai init`
 .notifai/
 
 .DS_Store

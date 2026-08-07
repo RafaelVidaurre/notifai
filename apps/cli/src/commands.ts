@@ -211,7 +211,7 @@ export async function loginCommand(
 
   const interactive = deps.io.interactive === true
   if (interactive) {
-    await deps.io.intro?.('NotifAI sign in')
+    await deps.io.intro?.('Notifai sign in')
     await deps.io.note?.(`Code: ${begin.code}\n${begin.approve_url}`, 'Approve this machine')
   } else {
     deps.io.out(`Pairing code: ${begin.code}`)
@@ -339,7 +339,7 @@ export async function devicesCommand(deps: CommandDeps, flags: { json?: boolean 
       return EXIT.ok
     }
     if (result.devices.length === 0) {
-      deps.io.out('No devices. Install a NotifAI companion app on a device and sign in.')
+      deps.io.out('No devices. Install a Notifai companion app on a device and sign in.')
       return EXIT.ok
     }
     for (const d of result.devices) {
@@ -1038,13 +1038,13 @@ function diagnoseMissingSession(deps: CommandDeps): string[] {
   const installations = findInstallations(deps.cwd, deps.env)
   if (installations.length === 0) {
     return [
-      'Could not tell which harness session this is: no NotifAI hooks are installed for this project.',
+      'Could not tell which harness session this is: no Notifai hooks are installed for this project.',
       'Run `notifai hooks install`, then follow the activation instruction it prints.',
     ]
   }
   const where = installations.map((i) => `${i.harness} in ${i.file}`).join(', ')
   return [
-    `Could not tell which harness session this is. NotifAI hooks are installed (${where}),`,
+    `Could not tell which harness session this is. Notifai hooks are installed (${where}),`,
     'but no usable session pointer from the last 24 hours exists here.',
     hookActivationAdvice(installations),
     'To ask from this session anyway, pass --session <id>.',
@@ -1257,7 +1257,7 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
 }
 
 /**
- * Writes the OpenCode plugin, replacing any NotifAI plugin already there —
+ * Writes the OpenCode plugin, replacing any Notifai plugin already there —
  * including one a different checkout wrote, matched on the managed marker for
  * the same reason command hooks are.
  */
@@ -1269,7 +1269,7 @@ function installOpencodePlugin(
   if (existsSync(file)) {
     const existing = readFileSync(file, 'utf8')
     if (!isOurOpencodePlugin(existing)) {
-      deps.io.err(`${file} exists and was not written by NotifAI; move it aside first.`)
+      deps.io.err(`${file} exists and was not written by Notifai; move it aside first.`)
       return EXIT.failed
     }
   }
@@ -1304,11 +1304,11 @@ export function hooksUninstallCommand(deps: CommandDeps, flags: HooksInstallFlag
   if (harness === 'opencode') {
     // We own the whole file, but only if we wrote it.
     if (!isOurOpencodePlugin(readFileSync(file, 'utf8'))) {
-      deps.io.out(`Left ${file} alone: NotifAI did not write it.`)
+      deps.io.out(`Left ${file} alone: Notifai did not write it.`)
       return EXIT.ok
     }
     rmSync(file, { force: true })
-    deps.io.out(`Removed the NotifAI OpenCode plugin at ${file}`)
+    deps.io.out(`Removed the Notifai OpenCode plugin at ${file}`)
     return EXIT.ok
   }
   if (harness === 'cursor') {
@@ -1328,8 +1328,8 @@ export function hooksUninstallCommand(deps: CommandDeps, flags: HooksInstallFlag
     }
     deps.io.out(
       stripped.replaced.length > 0
-        ? `Removed NotifAI hooks (${stripped.replaced.join(', ')}) from ${file}`
-        : `No NotifAI hooks found in ${file}`,
+        ? `Removed Notifai hooks (${stripped.replaced.join(', ')}) from ${file}`
+        : `No Notifai hooks found in ${file}`,
     )
     return EXIT.ok
   }
@@ -1349,8 +1349,8 @@ export function hooksUninstallCommand(deps: CommandDeps, flags: HooksInstallFlag
   }
   deps.io.out(
     stripped.replaced.length > 0
-      ? `Removed NotifAI hooks (${stripped.replaced.join(', ')}) from ${file}`
-      : `No NotifAI hooks found in ${file}`,
+      ? `Removed Notifai hooks (${stripped.replaced.join(', ')}) from ${file}`
+      : `No Notifai hooks found in ${file}`,
   )
   return EXIT.ok
 }
@@ -1810,7 +1810,7 @@ function setupProofDraft(
 ): ReturnType<typeof buildDraft> {
   const project = config.project.value
   return buildDraft(config, {
-    title: 'NotifAI is ready',
+    title: 'Notifai is ready',
     body:
       project === null
         ? 'This real notification completed setup verification.'
@@ -2037,7 +2037,7 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
     )
     return EXIT.usage
   }
-  await deps.io.intro?.('NotifAI setup')
+  await deps.io.intro?.('Notifai setup')
 
   const reassess = () =>
     assessReadiness(
@@ -2380,16 +2380,16 @@ export async function assessReadiness(
               // permission prompt.
               detail:
                 devices.length === 0
-                  ? 'nothing registered yet; invited Alpha testers install NotifAI from their private TestFlight invitation on iPhone or Mac'
+                  ? 'nothing registered yet; invited Alpha testers install Notifai from their private TestFlight invitation on iPhone or Mac'
                   : `${devices.map((d) => `${d.display_name} (${d.permission_status})`).join(', ')} — registered but not able to receive`,
               remedy: {
                 by: 'user-elsewhere',
                 summary:
                   devices.length === 0
-                    ? 'open your NotifAI TestFlight invitation on that device, install the app, sign in with the same account, and allow notifications'
+                    ? 'open your Notifai TestFlight invitation on that device, install the app, sign in with the same account, and allow notifications'
                     : devices.some((d) => d.permission_status === 'denied')
-                      ? 'allow notifications for NotifAI in that device’s system settings'
-                      : 'open NotifAI on that device and allow its notification prompt',
+                      ? 'allow notifications for Notifai in that device’s system settings'
+                      : 'open Notifai on that device and allow its notification prompt',
               },
             },
       )
@@ -2530,7 +2530,7 @@ export async function doctorCommand(deps: CommandDeps, flags: { json?: boolean }
   // problems in dependency order has an obvious first move and saying so
   // costs nothing.
   if (deps.io.interactive === true && deps.io.check) {
-    await deps.io.intro?.('NotifAI doctor')
+    await deps.io.intro?.('Notifai doctor')
     for (const s of readiness.states) await deps.io.check(s.status !== 'gap', line(s))
     await deps.io.outro?.(ok ? 'Everything looks good' : `Start with: ${remedyLine(blocker)}`)
   } else {
@@ -2688,7 +2688,7 @@ function hookChecks(deps: CommandDeps): { name: string; ok: boolean; detail: str
       detail: duplicated
         .map(
           (entry) =>
-            `${entry.harness}: ${entry.scripts.size} different NotifAI builds are installed, so each event will fire all of them. Uninstall the ones you do not want: ${[...entry.scripts].join(', ')}`,
+            `${entry.harness}: ${entry.scripts.size} different Notifai builds are installed, so each event will fire all of them. Uninstall the ones you do not want: ${[...entry.scripts].join(', ')}`,
         )
         .join('; '),
     })

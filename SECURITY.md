@@ -13,7 +13,7 @@ waiting on a security response — with no details of the issue itself.
 
 ## Supported versions
 
-NotifAI is pre-1.0. Only the latest published version receives fixes.
+Notifai is pre-1.0. Only the latest published version receives fixes.
 
 ## Scope
 

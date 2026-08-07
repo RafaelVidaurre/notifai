@@ -82,13 +82,13 @@ export function hookCommand(
 }
 
 /**
- * Says "NotifAI installed this" without saying which checkout did.
+ * Says "Notifai installed this" without saying which checkout did.
  *
  * Ownership used to be matched on the absolute script path, so installing from
  * a second checkout did not recognise the first one's handlers as ours. Both
  * stayed, the harness ran both, and one question produced two notifications;
  * uninstalling the second silently left the first running. A marker that every
- * NotifAI build writes and no build's path appears in fixes that by making
+ * Notifai build writes and no build's path appears in fixes that by making
  * ownership a property of the handler rather than of the machine it was
  * installed from.
  *
@@ -645,9 +645,9 @@ export interface Installation {
 }
 
 /**
- * Any NotifAI handler, whatever checkout wrote it.
+ * Any Notifai handler, whatever checkout wrote it.
  *
- * Deliberately looser than `isOurHandler`: this answers "has NotifAI been set
+ * Deliberately looser than `isOurHandler`: this answers "has Notifai been set
  * up here at all", and a handler installed from a second checkout is still
  * evidence that it has (and is itself worth reporting).
  */
@@ -659,7 +659,7 @@ function isNotifaiHandler(handler: HookHandler): boolean {
   return isNotifaiCommand(handler.command)
 }
 
-/** Every place either harness would read a NotifAI handler from. */
+/** Every place either harness would read a Notifai handler from. */
 export function findInstallations(cwd: string, env: NodeJS.ProcessEnv = process.env): Installation[] {
   const found: Installation[] = []
   for (const harness of HARNESSES) {

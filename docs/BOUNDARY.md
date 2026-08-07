@@ -1,6 +1,6 @@
 # Public/private boundary policy
 
-This repository contains only the NotifAI client surface: the CLI and the
+This repository contains only the Notifai client surface: the CLI and the
 client-visible wire contract. The service implementation, companion apps,
 and operations are private, and the boundary between the two is part of
 this project's security posture: **the service must remain secure when

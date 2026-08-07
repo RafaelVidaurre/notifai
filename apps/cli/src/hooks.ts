@@ -1039,7 +1039,7 @@ async function escalate(
       // Harnesses render a Stop decision under an error-ish label, so this
       // text must read as an answer on its own rather than as a failure.
       reason:
-        `NotifAI — the user answered from ${asked.reply.device_name}: ` +
+        `Notifai — the user answered from ${asked.reply.device_name}: ` +
         `"${asked.reply.text}". Continue with that answer.`,
     }),
     notes,

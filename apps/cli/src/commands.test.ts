@@ -657,7 +657,7 @@ describe('Cursor hook commands', () => {
     expect(io.outLines.some((line) => line.includes('Cursor: send one prompt'))).toBe(true)
   })
 
-  it('uninstalls only NotifAI Cursor hooks and preserves foreign hooks', () => {
+  it('uninstalls only Notifai Cursor hooks and preserves foreign hooks', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-cursor-uninstall-'))
     const io = new CapturedIo()
     const deps = { ...makeDeps(io, {} as ApiClient), cwd }
@@ -754,7 +754,7 @@ describe('harness activation guidance', () => {
 describe('projectSlugFrom', () => {
   it('canonicalizes directory names into contract-valid slugs', () => {
     expect(projectSlugFrom('My App')).toBe('my-app')
-    expect(projectSlugFrom('NotifAI')).toBe('notifai')
+    expect(projectSlugFrom('Notifai')).toBe('notifai')
     expect(projectSlugFrom('--weird__Name.2')).toBe('weird__name.2')
     expect(projectSlugFrom('!!!')).toBe('project')
   })
@@ -796,7 +796,7 @@ describe('interactive command UX', () => {
     }
 
     expect(await loginCommand(deps, { name: 'workstation', open: false })).toBe(EXIT.ok)
-    expect(io.intros).toEqual(['NotifAI sign in'])
+    expect(io.intros).toEqual(['Notifai sign in'])
     expect(io.notes).toEqual([
       {
         title: 'Approve this machine',
@@ -918,7 +918,7 @@ describe('interactive command UX', () => {
     }
 
     expect(await doctorCommand(deps, {})).toBe(EXIT.failed)
-    expect(io.intros).toEqual(['NotifAI doctor'])
+    expect(io.intros).toEqual(['Notifai doctor'])
     expect(io.checks.some((check) => !check.ok && check.message.startsWith('This machine:'))).toBe(true)
     expect(io.checks.some((check) => check.ok && check.message.startsWith('Protocol version:'))).toBe(true)
     expect(io.outLines).toEqual([])
@@ -1394,7 +1394,7 @@ describe('init', () => {
     const out = io.outLines.join('\n')
     expect(out).toContain('Next: Your devices')
     expect(out).toContain('private TestFlight invitation on iPhone or Mac')
-    expect(out).toContain('open your NotifAI TestFlight invitation on that device')
+    expect(out).toContain('open your Notifai TestFlight invitation on that device')
     expect(out.match(/^Next:/gm)).toHaveLength(1)
   })
 

@@ -26,7 +26,7 @@
     "typescript": "^5.8.0",
     "vitest": "^3.2.0"
   },
-  "description": "Client-visible NotifAI wire contract: notification drafts, REST v1 request/response types, status vocabulary, and capability negotiation.",
+  "description": "Client-visible Notifai wire contract: notification drafts, REST v1 request/response types, status vocabulary, and capability negotiation.",
   "license": "Apache-2.0",
   "author": "Rafael Vidaurre",
   "homepage": "https://github.com/RafaelVidaurre/notifai#readme",

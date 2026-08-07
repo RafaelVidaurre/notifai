@@ -1,11 +1,11 @@
 ---
 name: notifai
-description: Notify the user through NotifAI when work finishes, blocks, or needs their attention. Use for sending native notifications from agents via the notifai CLI and for configuring when/how a user wants to be notified (per project or globally).
+description: Notify the user through Notifai when work finishes, blocks, or needs their attention. Use for sending native notifications from agents via the notifai CLI and for configuring when/how a user wants to be notified (per project or globally).
 ---
 
-# NotifAI: notify your user well
+# Notifai: notify your user well
 
-NotifAI delivers notifications from agents and local programs to the user's
+Notifai delivers notifications from agents and local programs to the user's
 devices (and, in the future, other channels such as chat bots). You interact
 with it through the `notifai` CLI. This skill covers two jobs:
 
@@ -376,7 +376,7 @@ worktrees need that directory too; run the installer once from each new
 worktree rather than assuming one install activates all of them.
 
 On OpenCode the adapter is a generated plugin file rather than an entry in a
-settings document. NotifAI owns that whole file: install refuses to overwrite a
+settings document. Notifai owns that whole file: install refuses to overwrite a
 plugin it did not write, and uninstall removes only its own. The same restart
 rule applies — OpenCode loads plugins once at start. Its current `session.idle`
 event is wired to question routing but has no reliable Stop-style continuation,

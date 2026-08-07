@@ -6,7 +6,7 @@ import path from 'node:path'
 /** The two scopes offered by the skills installer. */
 export type SkillScope = 'project' | 'global'
 
-/** The installer-managed evidence needed by NotifAI readiness. */
+/** The installer-managed evidence needed by Notifai readiness. */
 export interface NativeSkill {
   name: string
   scope: SkillScope
@@ -152,7 +152,7 @@ function run(
   })
 }
 
-/** The only process/filesystem adapter NotifAI needs for the external installer. */
+/** The only process/filesystem adapter Notifai needs for the external installer. */
 export const nativeSkills: NativeSkills = {
   async add(options) {
     const args = ['-y', 'skills', 'add', options.source, '--skill', options.skill]

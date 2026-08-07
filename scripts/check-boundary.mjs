@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Structural boundary check for the public NotifAI CLI repository.
+ * Structural boundary check for the public Notifai CLI repository.
  *
  * Fails when the tree contains anything that is not part of the public
  * client surface: unexpected top-level entries, extra workspace packages,

@@ -94,9 +94,9 @@ const program = new Command('notifai')
 
 program
   .command('login')
-  .description('Pair this machine with your NotifAI account via browser approval')
+  .description('Pair this machine with your Notifai account via browser approval')
   .option('--name <name>', 'machine name shown in the dashboard (default: hostname)')
-  .option('--base-url <url>', 'NotifAI server URL')
+  .option('--base-url <url>', 'Notifai server URL')
   .option('--no-open', 'do not open the approval page in a browser')
   .action(async (opts: { name?: string; baseUrl?: string; open?: boolean }) => {
     process.exit(await loginCommand(deps, opts))
@@ -181,7 +181,7 @@ program
   .option('--wait <seconds>', 'how long to wait for provider outcomes', (v: string) => Number(v))
   .option('--no-wait', 'return immediately after acceptance')
   .option('--idempotency-key <key>', 'safe-retry key (default: random)')
-  .option('--base-url <url>', 'NotifAI server URL')
+  .option('--base-url <url>', 'Notifai server URL')
   .option('--json', 'print the full submission receipt as JSON')
   .action(async (opts: Record<string, unknown>) => {
     // commander maps --no-wait onto the same "wait" flag; disentangle.
@@ -263,7 +263,7 @@ program
   .command('hook <event>')
   .description('Internal: run a harness hook (reads hook JSON on stdin)')
   // Inert, and the point of it is that it is inert: the installed command line
-  // carries a marker that says "NotifAI wrote this" independently of which
+  // carries a marker that says "Notifai wrote this" independently of which
   // checkout wrote it.
   .option('--owner <name>', 'internal ownership marker')
   .option('--harness <name>', 'internal harness output adapter')
@@ -325,7 +325,7 @@ config
 program
   .command('init')
   .description(
-    'Set up NotifAI here, idempotently: sign-in, project id, hooks, device readiness, live receipt proof. ' +
+    'Set up Notifai here, idempotently: sign-in, project id, hooks, device readiness, live receipt proof. ' +
       'Interactive at a human terminal; never prompts otherwise (agents: pass flags)',
   )
   .option('--project-id <id>', 'project identifier slug (default: derived from the directory name)')
