@@ -35,6 +35,7 @@ import {
   type CommandSpinner,
 } from './commands.js'
 import { applyPlan, buildHookConfig } from './install-hooks.js'
+import { writeProjectSession } from './hooks.js'
 import type { NativeSkill, NativeSkills, SkillScope } from './native-skills.js'
 
 class CapturedIo implements CommandIo {
@@ -1728,6 +1729,122 @@ describe('an outage is not an answer', () => {
 })
 
 describe('asking before the hooks have ever run', () => {
+  const execPath = '/usr/local/bin/node'
+  const scriptPath = '/opt/notifai/dist/main.js'
+
+  it('names the active Codex harness instead of unrelated installed adapters', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-active-codex-missing-'))
+    const io = new CapturedIo()
+    const env = {
+      XDG_CONFIG_HOME: path.join(cwd, 'config'),
+      XDG_STATE_HOME: path.join(cwd, 'state'),
+      CODEX_HOME: path.join(cwd, 'codex-home'),
+      CODEX_THREAD_ID: 'codex-current-thread',
+      CLAUDE_CONFIG_DIR: path.join(cwd, 'claude-home'),
+      OPENCODE_CONFIG_DIR: path.join(cwd, 'opencode-home'),
+    }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env }
+
+    expect(hooksInstallCommand(deps, { harness: 'claude-code', execPath, scriptPath })).toBe(EXIT.ok)
+    expect(hooksInstallCommand(deps, { harness: 'opencode', execPath, scriptPath })).toBe(EXIT.ok)
+    io.outLines = []
+
+    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
+    const said = io.errLines.join(' ')
+    expect(said).toMatch(/active Codex session/i)
+    expect(said).toContain('notifai hooks install --harness codex')
+    expect(said).not.toMatch(/Claude Code: send one new prompt|OpenCode: restart/)
+  })
+
+  it('refuses a recent pointer owned by another Codex thread', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-active-codex-mismatch-'))
+    const io = new CapturedIo()
+    const env = {
+      XDG_CONFIG_HOME: path.join(cwd, 'config'),
+      XDG_STATE_HOME: path.join(cwd, 'state'),
+      CODEX_HOME: path.join(cwd, 'codex-home'),
+      CODEX_THREAD_ID: 'codex-current-thread',
+    }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
+
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
+    writeProjectSession(cwd, env, 'codex-other-thread', 42)
+    io.outLines = []
+
+    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
+    expect(io.errLines.join(' ')).toMatch(/belongs to another Codex session/i)
+    expect(io.outLines).not.toContain(
+      'Question registered. Ask it in the conversation as usual and end your turn.',
+    )
+  })
+
+  it('registers only when the active Codex thread owns the project pointer', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-active-codex-matching-'))
+    const io = new CapturedIo()
+    const env = {
+      XDG_CONFIG_HOME: path.join(cwd, 'config'),
+      XDG_STATE_HOME: path.join(cwd, 'state'),
+      CODEX_HOME: path.join(cwd, 'codex-home'),
+      CODEX_THREAD_ID: 'codex-current-thread',
+    }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
+
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
+    writeProjectSession(cwd, env, 'codex-current-thread', 42)
+    io.outLines = []
+
+    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.ok)
+    expect(io.outLines).toContain(
+      'Question registered. Ask it in the conversation as usual and end your turn.',
+    )
+  })
+
+  it('gives doctor the same active-Codex diagnosis as ask', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-active-codex-doctor-'))
+    const io = new CapturedIo()
+    const env = {
+      XDG_CONFIG_HOME: path.join(cwd, 'config'),
+      XDG_STATE_HOME: path.join(cwd, 'state'),
+      CODEX_HOME: path.join(cwd, 'codex-home'),
+      CODEX_THREAD_ID: 'codex-current-thread',
+      CLAUDE_CONFIG_DIR: path.join(cwd, 'claude-home'),
+    }
+    const client = {
+      health: async () => true,
+      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+      listDevices: async () => ({ devices: [] }),
+    } as unknown as ApiClient
+    const nativeSkills: NativeSkills = {
+      add: async () => 0,
+      list: async (scope) => ({
+        skills:
+          scope === 'global'
+            ? [
+                {
+                  name: 'notifai',
+                  scope,
+                  path: path.join(cwd, 'global-skills', 'notifai'),
+                  source: 'RafaelVidaurre/notifai',
+                  sourceType: 'github',
+                  sourceUrl: 'https://github.com/RafaelVidaurre/notifai.git',
+                  ref: 'v0.1.8',
+                },
+              ]
+            : [],
+      }),
+    }
+    const deps = { ...makeDeps(io, client), cwd, env, nativeSkills }
+
+    expect(hooksInstallCommand(deps, { harness: 'claude-code', execPath, scriptPath })).toBe(EXIT.ok)
+    io.outLines = []
+
+    await doctorCommand(deps, {})
+    const said = io.outLines.join(' ')
+    expect(said).toContain(`installed from ${SKILLS_SOURCE} in the global scope`)
+    expect(said).toMatch(/active Codex/i)
+    expect(said).toContain('notifai hooks install --harness codex')
+  })
+
   it('tells Claude Code to send a prompt without falsely requiring a restart', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-firstrun-'))
     mkdirSync(path.join(cwd, '.claude'), { recursive: true })
@@ -1747,6 +1864,43 @@ describe('asking before the hooks have ever run', () => {
     const said = io.errLines.join(' ')
     expect(said).toMatch(/project hook files reload without a restart/i)
     expect(said).not.toMatch(/Run `notifai hooks install` and send one prompt/)
+  })
+
+  it('gives Cursor its prompt-and-doctor activation path', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-cursor-first-run-'))
+    const io = new CapturedIo()
+    const deps = {
+      ...makeDeps(io, {} as ApiClient),
+      cwd,
+      env: { XDG_STATE_HOME: path.join(cwd, 'state') },
+    }
+
+    expect(hooksInstallCommand(deps, { harness: 'cursor', execPath, scriptPath })).toBe(EXIT.ok)
+    io.outLines = []
+
+    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
+    expect(io.errLines.join(' ')).toMatch(/Cursor: send one prompt, then run `notifai doctor`/)
+  })
+
+  it('keeps OpenCode activation separate from answer continuation', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-opencode-first-run-'))
+    const io = new CapturedIo()
+    const deps = {
+      ...makeDeps(io, {} as ApiClient),
+      cwd,
+      env: {
+        XDG_STATE_HOME: path.join(cwd, 'state'),
+        OPENCODE_CONFIG_DIR: path.join(cwd, 'opencode-home'),
+      },
+    }
+
+    expect(hooksInstallCommand(deps, { harness: 'opencode', execPath, scriptPath })).toBe(EXIT.ok)
+    io.outLines = []
+
+    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
+    const said = io.errLines.join(' ')
+    expect(said).toMatch(/OpenCode: restart it, then send one prompt/)
+    expect(said).toContain('notifai send --reply')
   })
 
   it('says to install when nothing is installed at all', () => {

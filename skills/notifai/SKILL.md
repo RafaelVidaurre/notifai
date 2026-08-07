@@ -194,8 +194,19 @@ answer=$(notifai send \
 
 ### Asking without blocking (on continuation-capable harnesses)
 
-If the user has run `notifai hooks install`, prefer `notifai ask` over a
-blocking `--reply` send:
+If the user has run `notifai hooks install`, passed the active-harness preflight
+below, and the harness can continue from a device answer, prefer `notifai ask`
+over a blocking `--reply` send.
+
+Before the first `ask` in a new project or harness session, run `notifai
+doctor`. The **Question routing** line must name the harness you are actually
+running in, and **hooks (fired)** must say a session in this directory ran
+them. An installed skill or hooks for a different harness do not satisfy that
+preflight. If doctor names a missing active-harness installation, an unfired
+hook, or a pointer owned by another session, follow its exact bounded recovery
+and do not register the question yet. In Codex this check is fail-closed against
+`CODEX_THREAD_ID`, so a stale Claude Code or previous-Codex pointer cannot
+silently receive the question.
 
 ```bash
 notifai ask "Which environment should I deploy to?" --choice "Staging,Production,Cancel"
@@ -359,7 +370,9 @@ question you registered with `notifai ask` reaches the user's devices after the
 terminal-first grace window. With the default `require_idle = true`, it only
 pushes after they have gone quiet; `require_idle = false` deliberately allows
 pushes while they are working. Suggest it once; do not install it without being
-asked.
+asked. A machine-global Notifai skill is agent guidance, not harness routing:
+its presence never proves that the active harness has hooks or a current
+session pointer.
 
 Hook activation differs by harness. Claude Code reloads project hook files
 without a restart; send one new prompt after installation so the hook can

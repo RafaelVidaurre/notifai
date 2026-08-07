@@ -979,11 +979,30 @@ export function askCommand(deps: CommandDeps, question: string, flags: AskFlags)
   // label rather than the harness's own id, and the hooks key state by the
   // latter — the env var is only trusted when no hook has spoken.
   const now = (deps.now ?? Date.now)()
-  const sessionId =
-    flags.session ??
-    readProjectSession(deps.cwd, deps.env, now) ??
-    deps.env['NOTIFAI_SESSION'] ??
-    undefined
+  const pointer = readProjectSession(deps.cwd, deps.env, now)
+  const active = activeCodexSession(deps.env)
+  let sessionId: string | undefined
+  if (flags.session !== undefined) {
+    sessionId = flags.session
+  } else if (active !== null) {
+    const installations = findInstallations(deps.cwd, deps.env)
+    const codexInstalled = installations.some((installation) => installation.harness === 'codex')
+    if (!codexInstalled) {
+      for (const line of diagnoseActiveCodexSession('not-installed', installations)) deps.io.err(line)
+      return EXIT.usage
+    }
+    if (pointer === null) {
+      for (const line of diagnoseActiveCodexSession('not-fired', installations)) deps.io.err(line)
+      return EXIT.usage
+    }
+    if (pointer !== active.sessionId) {
+      for (const line of diagnoseActiveCodexSession('different-session', installations)) deps.io.err(line)
+      return EXIT.usage
+    }
+    sessionId = pointer
+  } else {
+    sessionId = pointer ?? deps.env['NOTIFAI_SESSION'] ?? undefined
+  }
   if (!sessionId) {
     for (const line of diagnoseMissingSession(deps)) deps.io.err(line)
     return EXIT.usage
@@ -1023,6 +1042,49 @@ export function askCommand(deps: CommandDeps, question: string, flags: AskFlags)
   if (ambiguous !== null) deps.io.out(ambiguous)
   deps.io.out('Question registered. Ask it in the conversation as usual and end your turn.')
   return EXIT.ok
+}
+
+/**
+ * Codex injects the current thread id into every agent-run shell command.
+ * That is strong evidence of the active harness, but it is deliberately not a
+ * routing fallback: child agents can have a different thread id while Codex's
+ * hook session identity remains rooted at the parent. Using it blindly would
+ * trade a clear setup failure for a cross-session question.
+ */
+function activeCodexSession(env: NodeJS.ProcessEnv): { sessionId: string } | null {
+  const sessionId = env['CODEX_THREAD_ID']
+  return sessionId === undefined || sessionId === '' ? null : { sessionId }
+}
+
+type ActiveCodexProblem = 'not-installed' | 'not-fired' | 'different-session'
+
+function diagnoseActiveCodexSession(
+  problem: ActiveCodexProblem,
+  installations: Installation[],
+): string[] {
+  if (problem === 'not-installed') {
+    const others = installations.map((installation) => installation.harness)
+    return [
+      'Could not register the question for the active Codex session: Notifai Codex hooks are not installed for this project.',
+      ...(others.length === 0
+        ? []
+        : [`Hooks installed for ${[...new Set(others)].join(', ')} do not route a Codex session.`]),
+      'Run `notifai hooks install --harness codex`, then send one Codex prompt and run `notifai doctor`.',
+      'Retry `notifai ask` only after doctor reports that the Codex hooks fired; start a new Codex session if one prompt does not activate them.',
+    ]
+  }
+  if (problem === 'different-session') {
+    return [
+      'Could not register the question for the active Codex session: the project pointer belongs to another Codex session or harness.',
+      'Refusing to guess or cross-wire the question. Send one prompt in this Codex session, then run `notifai doctor`.',
+      'Retry `notifai ask` only after doctor reports that this active Codex session fired the hooks.',
+    ]
+  }
+  return [
+    'Could not register the question for the active Codex session: Notifai Codex hooks are installed, but this session has not published its pointer.',
+    'Send one Codex prompt, then run `notifai doctor`; start a new Codex session only if the hooks still have not fired.',
+    'Retry `notifai ask` only after doctor reports that the active Codex session fired the hooks.',
+  ]
 }
 
 /**
@@ -1091,7 +1153,9 @@ function hookActivationAdvice(installations: Installation[]): string {
     )
   }
   if (harnesses.has('opencode')) {
-    advice.push('OpenCode: restart it, then send one prompt; plugins load at startup')
+    advice.push(
+      'OpenCode: restart it, then send one prompt; plugins load at startup, and decisions that must resume the agent should use `notifai send --reply`',
+    )
   }
   return `${advice.join('. ')}.`
 }
@@ -2579,16 +2643,23 @@ function remedyLine(state: ReadinessState): string {
 function hookStates(deps: CommandDeps): ReadinessState[] {
   const installations = findInstallations(deps.cwd, deps.env)
   if (installations.length === 0) {
+    const active = activeCodexSession(deps.env)
     return [
       {
         id: 'hooks',
         title: 'Question routing',
         status: 'optional-gap',
-        detail: 'hooks not installed, so questions stay in the terminal',
+        detail:
+          active === null
+            ? 'hooks not installed, so questions stay in the terminal'
+            : 'active Codex session detected, but Codex hooks are not installed; `notifai ask` cannot route this session',
         remedy: {
           by: 'cli',
           summary: 'install harness hooks so questions reach your devices when you are away',
-          command: 'notifai hooks install',
+          command:
+            active === null
+              ? 'notifai hooks install'
+              : 'notifai hooks install --harness codex',
         },
       },
     ]
@@ -2634,6 +2705,35 @@ function hookChecks(deps: CommandDeps): { name: string; ok: boolean; detail: str
       .map((i) => `${i.harness} ${i.global ? 'global' : 'project'} (${i.file})`)
       .join(', '),
   })
+
+  const active = activeCodexSession(deps.env)
+  const activeInstallations =
+    active === null
+      ? []
+      : installations.filter((installation) => installation.harness === 'codex')
+  if (active !== null) {
+    checks.push({
+      name: 'hooks (active harness)',
+      ok: activeInstallations.length > 0,
+      detail:
+        activeInstallations.length > 0
+          ? 'active Codex session has a Codex hook installation'
+          : 'active Codex session has no Codex hook installation — run `notifai hooks install --harness codex`',
+    })
+    if (activeInstallations.length > 0) {
+      const pointer = readProjectSession(deps.cwd, deps.env, (deps.now ?? Date.now)())
+      checks.push({
+        name: 'hooks (active session)',
+        ok: pointer === active.sessionId,
+        detail:
+          pointer === null
+            ? 'active Codex session has not published a pointer — send one Codex prompt, then check again'
+            : pointer === active.sessionId
+              ? 'the project pointer belongs to the active Codex session'
+              : 'the project pointer belongs to another Codex session or harness; refusing cross-session routing',
+      })
+    }
+  }
 
   // A handler naming an event this build dropped exits 2 every time the harness
   // fires it, which the harness reports as a hook failure.
@@ -2694,13 +2794,16 @@ function hookChecks(deps: CommandDeps): { name: string; ok: boolean; detail: str
     })
   }
 
-  const fired = readProjectSession(deps.cwd, deps.env, (deps.now ?? Date.now)()) !== null
+  const firedPointer = readProjectSession(deps.cwd, deps.env, (deps.now ?? Date.now)())
+  const fired = firedPointer !== null
+  const activationInstallations =
+    active !== null && activeInstallations.length > 0 ? activeInstallations : installations
   checks.push({
     name: 'hooks (fired)',
     ok: fired,
     detail: fired
       ? 'a session in this directory has run them'
-      : `no session pointer from the last 24 hours — ${hookActivationAdvice(installations)}`,
+      : `no session pointer from the last 24 hours — ${hookActivationAdvice(activationInstallations)}`,
   })
 
   if (installations.some((installation) => installation.harness === 'opencode')) {
