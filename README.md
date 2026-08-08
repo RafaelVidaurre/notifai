@@ -33,7 +33,7 @@ or public TestFlight link for the Private Alpha.
 ## Status
 
 Notifai is pre-1.0 and published under Apache-2.0. The current packages are
-`@raidiant/notifai` 0.1.8 and `@raidiant/notifai-protocol` 0.1.1; their
+`@raidiant/notifai` 0.1.8 and `@raidiant/notifai-protocol` 0.1.2; their
 versions advance independently. Only the latest published version is
 supported.
 
