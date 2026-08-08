@@ -6,6 +6,7 @@ import {
   MACOS_SOUNDS,
   INTERRUPTION_LEVELS,
   REPLY_MAX_LENGTH,
+  COLLAPSE_KEY_MAX_BYTES,
   type Platform,
 } from './notification.js'
 import { buildApnsEnvelope, RECEIPT_TOKEN_LENGTH } from './apns.js'
@@ -257,6 +258,18 @@ export function validateDraft(
     ? capabilities
     : [capabilities]
   const typed = draft as NotificationDraftT
+
+  const collapseKey = typed.delivery.collapse_key
+  if (
+    collapseKey !== null &&
+    new TextEncoder().encode(collapseKey).length > COLLAPSE_KEY_MAX_BYTES
+  ) {
+    errors.push({
+      code: 'invalid_request',
+      path: 'delivery.collapse_key',
+      message: `Collapse keys must be at most ${COLLAPSE_KEY_MAX_BYTES} UTF-8 bytes.`,
+    })
+  }
 
   // `kind` and `choices` are two halves of one statement, and the schema can
   // only check them separately. A closed question with no answers, or answers

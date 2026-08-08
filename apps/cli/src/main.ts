@@ -168,7 +168,7 @@ program
     process.exit(await capabilitiesCommand(deps, opts))
   })
 
-program
+const send = program
   .command('send')
   .description('Send a notification')
   .requiredOption('--title <title>', 'notification title')
@@ -184,13 +184,10 @@ program
   .option('--all', 'target all routable devices (overrides configured devices)')
   .option('--ttl <seconds>', 'delivery window in seconds', (v: string) => Number(v))
   .option('--collapse-key <key>', 'replace earlier notifications with the same key')
-  .option('--platform <platform>', 'platform whose optional fields to include (default: ios)')
+  .option('--platform <platform>', 'limit optional fields to ios or macos (default: both)')
   .option('--sound <sound>', 'default | done | attention | alert | none')
-  .option('--badge <n>', 'app badge count', (v: string) => Number(v))
   .option('--thread-id <id>', 'group related notifications')
   .option('--level <level>', 'interruption level: passive | active | time_sensitive')
-  .option('--relevance <score>', '0..1 relevance score', (v: string) => Number(v))
-  .option('--target-content-id <id>')
   .option('--data <key=value>', 'custom data (repeatable)', (v: string, all: string[]) => [...all, v], [])
   .option('--image <path|url|media_id>', 'upload or attach an image')
   .option('--reply', 'enable the inline reply action and block for the answer')
@@ -241,6 +238,11 @@ program
     else flags.wait = wait
     process.exit(await sendCommand(deps, flags))
   })
+
+send.addHelpText(
+  'after',
+  `\nKind profiles (used unless --sound, --level, or saved user config overrides them):\n  update    sound none       level passive\n  done      sound done       level passive\n  question  sound attention  level active (--reply)\n`,
+)
 
 program
   .command('replies [request_id]')

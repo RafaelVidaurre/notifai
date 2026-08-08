@@ -141,6 +141,50 @@ describe('draft building', () => {
       presentation: { title: 'T', body: 'B' },
       targets: { mode: 'all' },
       delivery: { ttl_seconds: 86400, collapse_key: null },
+      platform: {
+        ios: { sound: null, interruption_level: 'passive' },
+        macos: { sound: null, interruption_level: 'passive' },
+      },
+    })
+  })
+
+  it.each([
+    { flags: {}, sound: null, level: 'passive' },
+    { flags: { kind: 'done' }, sound: 'done', level: 'passive' },
+    { flags: { reply: true }, sound: 'attention', level: 'active' },
+  ])('derives the $sound / $level kind profile from $flags', ({ flags, sound, level }) => {
+    const config = loadConfig({ cwd: base.cwd, env: base.env })
+    const build = buildDraft(config, { title: 'T', body: 'B', ...flags })
+    if (!build.ok) throw new Error(build.error)
+    expect(build.draft.platform).toEqual({
+      ios: { sound, interruption_level: level },
+      macos: { sound, interruption_level: level },
+    })
+  })
+
+  it('orders explicit flags over user config over the kind profile', () => {
+    const { env, cwd } = setup({
+      projectToml: 'sound = "alert"\ninterruption_level = "active"\n',
+    })
+    const config = loadConfig({ cwd, env })
+    const configured = buildDraft(config, { title: 'T', body: 'B', kind: 'done' })
+    if (!configured.ok) throw new Error(configured.error)
+    expect(configured.draft.platform?.ios).toEqual({
+      sound: 'alert',
+      interruption_level: 'active',
+    })
+
+    const explicit = buildDraft(config, {
+      title: 'T',
+      body: 'B',
+      kind: 'done',
+      sound: 'none',
+      level: 'time_sensitive',
+    })
+    if (!explicit.ok) throw new Error(explicit.error)
+    expect(explicit.draft.platform?.ios).toEqual({
+      sound: null,
+      interruption_level: 'time_sensitive',
     })
   })
 
@@ -208,6 +252,7 @@ describe('draft building', () => {
       interruption_level: 'time_sensitive',
       custom_data: { run_id: '42', branch: 'main' },
     })
+    expect(build.draft.platform?.macos).toEqual(build.draft.platform?.ios)
   })
 
   it('maps optional fields into the selected macOS platform slot', () => {
@@ -217,11 +262,8 @@ describe('draft building', () => {
       body: 'B',
       platform: 'macos',
       sound: 'none',
-      badge: 7,
       threadId: 'desktop-builds',
       level: 'passive',
-      relevance: 0.8,
-      targetContentId: 'build-detail',
       data: ['run_id=42'],
     })
     if (!build.ok) throw new Error(build.error)
@@ -230,14 +272,26 @@ describe('draft building', () => {
     expect(build.draft.platform).toEqual({
       macos: {
         sound: null,
-        badge: 7,
         thread_id: 'desktop-builds',
         interruption_level: 'passive',
-        relevance_score: 0.8,
-        target_content_id: 'build-detail',
         custom_data: { run_id: '42' },
       },
     })
+  })
+
+  it('limits collapse keys by UTF-8 bytes', () => {
+    const config = loadConfig({ cwd: base.cwd, env: base.env })
+    expect(buildDraft(config, { title: 'T', body: 'B', collapseKey: '😀'.repeat(16) }).ok).toBe(
+      true,
+    )
+    const oversized = buildDraft(config, {
+      title: 'T',
+      body: 'B',
+      collapseKey: '😀'.repeat(17),
+    })
+    expect(oversized.ok).toBe(false)
+    if (oversized.ok) throw new Error('expected rejection')
+    expect(oversized.error).toContain('64 UTF-8 bytes')
   })
 
   it('rejects malformed inputs with usage errors', () => {

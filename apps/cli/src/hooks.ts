@@ -697,7 +697,6 @@ async function askAndWait(
     replyWindow: Math.max(60, options.windowSeconds),
     ...(options.choices !== undefined ? { replyChoice: options.choices } : {}),
     collapseKey,
-    level: 'time_sensitive',
   })
   if (!build.ok) return { error: build.error }
 
@@ -1354,7 +1353,10 @@ async function escalate(
   }
 
   const asked = await askAndWait(ctx, {
-    title: 'A question from your agent',
+    title:
+      ctx.config.project.value === null
+        ? 'Question'
+        : `Question · ${ctx.config.project.value}`,
     body: pending.question,
     ...(pending.choices !== undefined ? { choices: pending.choices } : {}),
     event: 'agent_question',

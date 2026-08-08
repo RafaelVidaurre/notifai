@@ -239,6 +239,30 @@ describe('presence gate', () => {
       mode: 'selected',
       device_ids: ['dev_iphone', 'dev_mac'],
     })
+    expect(h.recorder.submitted[0]?.draft.presentation).toMatchObject({
+      title: 'Question',
+      body: 'Ship it?',
+    })
+    expect(h.recorder.submitted[0]?.draft.platform).toEqual({
+      ios: { sound: 'attention', interruption_level: 'active' },
+      macos: { sound: 'attention', interruption_level: 'active' },
+    })
+  })
+
+  it('names the resolved project in the pushed question title', async () => {
+    const h = harness([reply({ text: 'Yes' })], 900)
+    const projectDir = path.join(h.deps.cwd, '.notifai')
+    mkdirSync(projectDir, { recursive: true })
+    writeFileSync(
+      path.join(projectDir, 'config.toml'),
+      'project = "notifai-cli"\nask_grace_seconds = 0\n',
+    )
+    writeSessionState('project-title', h.env, { last_prompt_at: AWAY })
+    registerQuestion('project-title', h.env, { question: 'Ship it?' }, NOW)
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'project-title', cwd: h.deps.cwd }))
+
+    expect(h.recorder.submitted[0]?.draft.presentation.title).toBe('Question · notifai-cli')
   })
 
   it('falls back to elapsed time where no idle source exists', () => {

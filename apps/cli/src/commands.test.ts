@@ -245,9 +245,91 @@ describe('command contracts', () => {
       },
     } as unknown as ApiClient
 
-    expect(await sendCommand(makeDeps(io, client), { title: 'T', body: 'B', badge: -1 })).toBe(EXIT.usage)
+    expect(
+      await sendCommand(makeDeps(io, client), {
+        title: 'T',
+        body: 'B',
+        project: 'Invalid Project!',
+      }),
+    ).toBe(EXIT.usage)
     expect(submitCalls).toBe(0)
-    expect(io.errLines.join('\n')).toContain('platform.ios.badge')
+    expect(io.errLines.join('\n')).toContain('project')
+  })
+
+  it('rejects done plus reply before authentication or submission', async () => {
+    const io = new CapturedIo()
+    let submitCalls = 0
+    const client = {
+      submit: async () => {
+        submitCalls += 1
+        return receipt
+      },
+    } as unknown as ApiClient
+
+    expect(
+      await sendCommand(makeDeps(io, client), {
+        title: 'Done',
+        body: 'Answer?',
+        kind: 'done',
+        reply: true,
+      }),
+    ).toBe(EXIT.usage)
+    expect(submitCalls).toBe(0)
+    expect(io.errLines.join('\n')).toContain('--kind done cannot be combined with --reply')
+  })
+
+  it.each([
+    {
+      flags: { title: 'A title that is deliberately longer than forty characters', body: 'Plain.' },
+      warning: /titles work best around 40/i,
+    },
+    {
+      flags: { title: 'Details', body: '**bold Markdown**' },
+      warning: /--body looks like Markdown.*--detail/i,
+    },
+    {
+      flags: { title: 'Done · build', body: 'All green.' },
+      warning: /Use --kind done/i,
+    },
+    {
+      flags: { title: 'Failed · build', body: 'One integration test failed.' },
+      warning: /Use --kind done/i,
+    },
+    {
+      flags: { title: 'Update', body: 'Still relevant.', ttl: 259_201 },
+      warning: /longer than 72 hours/i,
+    },
+  ])('warns without rejecting a send: $warning', async ({ flags, warning }) => {
+    const io = new CapturedIo()
+    const client = { submit: async () => receipt } as unknown as ApiClient
+
+    expect(await sendCommand(makeDeps(io, client), flags)).toBe(EXIT.ok)
+    expect(io.errLines.join('\n')).toMatch(warning)
+  })
+
+  it('warns when a collapse key comes from machine-global config', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-global-collapse-'))
+    const configDir = path.join(root, 'notifai')
+    mkdirSync(configDir, { recursive: true })
+    writeFileSync(path.join(configDir, 'config.toml'), 'collapse_key = "global-key"\n')
+    const io = new CapturedIo()
+    const client = { submit: async () => receipt } as unknown as ApiClient
+    const deps = {
+      ...makeDeps(io, client),
+      env: { XDG_CONFIG_HOME: root },
+      cwd: root,
+    }
+
+    expect(await sendCommand(deps, { title: 'Update', body: 'Still relevant.' })).toBe(EXIT.ok)
+    expect(io.errLines.join('\n')).toMatch(/machine-global config/i)
+  })
+
+  it('removes unmanaged provider fields from the public send flags', () => {
+    const source = readFileSync(new URL('./main.ts', import.meta.url), 'utf8')
+    expect(source).not.toContain(".option('--badge")
+    expect(source).not.toContain(".option('--relevance")
+    expect(source).not.toContain(".option('--target-content-id")
+    expect(source).toContain('Kind profiles')
   })
 
   it('rejects a question nobody will wait for', async () => {

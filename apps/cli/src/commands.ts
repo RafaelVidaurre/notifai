@@ -427,6 +427,10 @@ export async function sendCommand(
   const hasReplyChoice = Array.isArray(flags.replyChoice)
     ? flags.replyChoice.length > 0
     : flags.replyChoice !== undefined
+  if (flags.reply && flags.kind === 'done') {
+    deps.io.err('--kind done cannot be combined with --reply; a reply request is a question.')
+    return EXIT.usage
+  }
   if (
     !flags.reply &&
     (flags.replyTimeout !== undefined || flags.replyWindow !== undefined || flags.noBlock || hasReplyChoice)
@@ -497,6 +501,7 @@ export async function sendCommand(
     for (const issue of validation.errors) deps.io.err(`${issue.path}: ${issue.message}`)
     return EXIT.usage
   }
+  emitSendWarnings(deps, flags, config)
   if (
     !flags.reply &&
     (flags.title.trim().endsWith('?') || flags.body.trim().endsWith('?'))
@@ -564,6 +569,49 @@ export async function sendCommand(
   } catch (err) {
     return reportError(deps, err)
   }
+}
+
+function emitSendWarnings(
+  deps: CommandDeps,
+  flags: SendFlags,
+  config: ReturnType<typeof loadConfig>,
+): void {
+  if (flags.title.length > 40) {
+    deps.io.err(
+      `Heads up: this title is ${flags.title.length} characters; notification titles work best around 40 characters or fewer.`,
+    )
+  }
+  if (looksLikeMarkdown(flags.body)) {
+    deps.io.err(
+      'Heads up: --body looks like Markdown, but banners show plain text. Put long-form Markdown in --detail or --detail-file.',
+    )
+  }
+  const effectiveKind = flags.reply ? 'question' : (flags.kind ?? 'update')
+  if (effectiveKind === 'update' && /^(done|failed)\b/i.test(flags.title.trim())) {
+    deps.io.err(
+      `Heads up: this title announces completion but the notification kind is update. Use --kind done for finished work.`,
+    )
+  }
+  if (
+    flags.collapseKey === undefined &&
+    config.collapse_key.value !== null &&
+    config.collapse_key.source.startsWith('global:')
+  ) {
+    deps.io.err(
+      'Heads up: collapse_key comes from machine-global config, so unrelated notifications may replace each other. Prefer a project or command-specific --collapse-key.',
+    )
+  }
+  if (flags.ttl !== undefined && flags.ttl > 259_200) {
+    deps.io.err(
+      'Heads up: this explicit --ttl is longer than 72 hours; stale notifications may arrive after they are useful.',
+    )
+  }
+}
+
+function looksLikeMarkdown(value: string): boolean {
+  return /(?:^|\n)\s{0,3}(?:#{1,6}\s|[-+*]\s|>\s|\d+\.\s|```)|(?:\*\*|__|~~|`)[^\n]+(?:\*\*|__|~~|`)|\[[^\]]+\]\([^)]+\)/m.test(
+    value,
+  )
 }
 
 export async function repliesCommand(

@@ -1,5 +1,6 @@
 import {
   CLI_SOUNDS,
+  COLLAPSE_KEY_MAX_BYTES,
   INTERRUPTION_LEVELS,
   NOTIFICATION_SCHEMA_VERSION,
   type IosOptionsT,
@@ -31,11 +32,8 @@ export interface SendFlags {
   ttl?: number
   collapseKey?: string
   sound?: string
-  badge?: number
   threadId?: string
   level?: string
-  relevance?: number
-  targetContentId?: string
   data?: string[]
   image?: string
   /** Enable the inline reply action for this Notification Request. */
@@ -72,14 +70,21 @@ export function buildDraft(config: CliConfig, flags: SendFlags): DraftBuild {
   const targets: NotificationDraftT['targets'] =
     deviceIds && deviceIds.length > 0 ? { mode: 'selected', device_ids: deviceIds } : { mode: 'all' }
 
-  const sound = flags.sound ?? config.sound.value
+  const effectiveKind = flags.reply ? 'question' : (flags.kind ?? 'update')
+  const profile = KIND_PROFILES[effectiveKind as keyof typeof KIND_PROFILES]
+  const configuredSound = config.sound.source === 'default' ? undefined : config.sound.value
+  const sound = flags.sound ?? configuredSound ?? profile?.sound
   if (sound !== null && sound !== undefined && !CLI_SOUNDS.includes(sound as CliSound)) {
     return {
       ok: false,
       error: `Unknown sound "${sound}" — supported: ${CLI_SOUNDS.map((value) => `"${value}"`).join(', ')}.`,
     }
   }
-  const level = flags.level ?? config.interruption_level.value
+  const configuredLevel =
+    config.interruption_level.source === 'default'
+      ? undefined
+      : config.interruption_level.value
+  const level = flags.level ?? configuredLevel ?? profile?.level
   if (
     level !== null &&
     level !== undefined &&
@@ -93,13 +98,10 @@ export function buildDraft(config: CliConfig, flags: SendFlags): DraftBuild {
   else if (sound !== null && sound !== undefined) {
     options.sound = sound as Exclude<(typeof CLI_SOUNDS)[number], 'none'>
   }
-  if (flags.badge !== undefined) options.badge = flags.badge
   if (flags.threadId !== undefined) options.thread_id = flags.threadId
   if (level !== null && level !== undefined) {
     options.interruption_level = level as (typeof INTERRUPTION_LEVELS)[number]
   }
-  if (flags.relevance !== undefined) options.relevance_score = flags.relevance
-  if (flags.targetContentId !== undefined) options.target_content_id = flags.targetContentId
   if (flags.data?.length) {
     const data: Record<string, string> = {}
     for (const pair of flags.data) {
@@ -122,6 +124,16 @@ export function buildDraft(config: CliConfig, flags: SendFlags): DraftBuild {
 
   const ttl = flags.ttl ?? config.ttl_seconds.value
   const collapse = flags.collapseKey ?? config.collapse_key.value
+  if (
+    collapse !== null &&
+    collapse !== undefined &&
+    Buffer.byteLength(collapse, 'utf8') > COLLAPSE_KEY_MAX_BYTES
+  ) {
+    return {
+      ok: false,
+      error: `--collapse-key must be at most ${COLLAPSE_KEY_MAX_BYTES} UTF-8 bytes.`,
+    }
+  }
 
   const project = flags.project ?? config.project.value
   // Harnesses can export NOTIFAI_SESSION once instead of passing the flag
@@ -167,13 +179,21 @@ export function buildDraft(config: CliConfig, flags: SendFlags): DraftBuild {
         }
       : {}),
     ...(Object.keys(options).length > 0
-      ? platform === 'ios'
-        ? { platform: { ios: options } }
-        : { platform: { macos: options } }
+      ? flags.platform === undefined
+        ? { platform: { ios: options, macos: options } }
+        : platform === 'ios'
+          ? { platform: { ios: options } }
+          : { platform: { macos: options } }
       : {}),
   }
   return { ok: true, draft, platform }
 }
+
+const KIND_PROFILES = {
+  update: { sound: 'none', level: 'passive' },
+  done: { sound: 'done', level: 'passive' },
+  question: { sound: 'attention', level: 'active' },
+} as const
 
 function resolvePlatform(value: string | undefined): Platform | null {
   if (value === undefined) return 'ios'

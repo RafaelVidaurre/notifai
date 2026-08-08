@@ -32,6 +32,26 @@ describe('validateDraft', () => {
     expect(report.errors).toEqual([])
   })
 
+  it('limits collapse keys by UTF-8 bytes rather than JavaScript characters', () => {
+    expect(
+      validateDraft(
+        draft({ delivery: { ttl_seconds: 60, collapse_key: '😀'.repeat(16) } }),
+      ).ok,
+    ).toBe(true)
+    const oversized = validateDraft(
+      draft({ delivery: { ttl_seconds: 60, collapse_key: '😀'.repeat(17) } }),
+    )
+    expect(oversized).toMatchObject({
+      ok: false,
+      errors: [
+        expect.objectContaining({
+          path: 'delivery.collapse_key',
+          message: expect.stringContaining('64 UTF-8 bytes'),
+        }),
+      ],
+    })
+  })
+
   it('carries the delivery receipt token on both alert and silent pushes', () => {
     // The extension authorizes its receipt with this and nothing else, so a
     // payload without it is an extension that cannot report.

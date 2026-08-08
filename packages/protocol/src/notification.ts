@@ -11,6 +11,9 @@ import { LIFECYCLE_END_STATES, LIFECYCLE_TIERS } from './lifecycle.js'
 
 export const NOTIFICATION_SCHEMA_VERSION = 1
 
+/** APNs collapse identifiers are limited by encoded size, not JavaScript characters. */
+export const COLLAPSE_KEY_MAX_BYTES = 64
+
 /** Fixed identifiers registered by the iOS Companion App for inline replies. */
 export const REPLY_CATEGORY_ID = 'notifai.reply'
 /**
@@ -83,9 +86,12 @@ export const DeliveryPolicy = Type.Object(
     /** 24h default; 0 requests one immediate attempt with no retries. */
     ttl_seconds: Type.Integer({ minimum: 0, maximum: 7 * 24 * 3600, default: 86400 }),
     /** No collapse by default; opting in requests replacement semantics. */
-    collapse_key: Type.Union([Type.String({ minLength: 1, maxLength: 64 }), Type.Null()], {
+    collapse_key: Type.Union(
+      [Type.String({ minLength: 1, maxLength: COLLAPSE_KEY_MAX_BYTES }), Type.Null()],
+      {
       default: null,
-    }),
+      },
+    ),
   },
   { additionalProperties: false },
 )
