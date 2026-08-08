@@ -112,7 +112,7 @@ program
 
 program
   .command('doctor')
-  .description('Audit config, credential, server, contract, device, hook, and saved receipt proof (no live send)')
+  .description('Audit config, credential, server, contract, device, hook, and saved receipt proof; exits nonzero when any line is FAIL (no live send)')
   .option('--json', 'machine-readable output')
   .action(async (opts: { json?: boolean }) => {
     process.exit(await doctorCommand(deps, opts))

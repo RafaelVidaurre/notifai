@@ -1,5 +1,15 @@
 import { randomBytes } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
 import path from 'node:path'
 import type { LifecycleEndState, ReplyView } from '@raidiant/notifai-protocol'
 import type { ApiClient } from './client.js'
@@ -12,6 +22,7 @@ import {
   type CliConfig,
 } from './config.js'
 import { buildDraft } from './send.js'
+import { atomicWriteFileSync } from './atomic-file.js'
 
 /**
  * Harness hook handlers.
@@ -222,15 +233,83 @@ export function writeSessionState(
   state: SessionState,
 ): void {
   const file = sessionStatePath(sessionId, env)
-  mkdirSync(path.dirname(file), { recursive: true })
-  writeFileSync(file, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 })
+  withFileLock(`${file}.lock`, () => writeSessionStateUnlocked(file, state))
 }
 
 export function clearSessionState(sessionId: string, env: NodeJS.ProcessEnv): void {
-  rmSync(sessionStatePath(sessionId, env), { force: true })
-  // The session override lives in a sibling file; leaving it behind meant a
-  // later session reusing the id silently inherited `ask_notifications = false`.
-  rmSync(sessionConfigPath(sessionId, env), { force: true })
+  const file = sessionStatePath(sessionId, env)
+  withFileLock(`${file}.lock`, () => {
+    rmSync(file, { force: true })
+    // The session override lives in a sibling file; leaving it behind meant a
+    // later session reusing the id silently inherited `ask_notifications = false`.
+    rmSync(sessionConfigPath(sessionId, env), { force: true })
+  })
+}
+
+function writeSessionStateUnlocked(file: string, state: SessionState): void {
+  atomicWriteFileSync(file, `${JSON.stringify(state, null, 2)}\n`)
+}
+
+function updateSessionState(
+  sessionId: string,
+  env: NodeJS.ProcessEnv,
+  update: (current: SessionState) => SessionState,
+): SessionState {
+  const file = sessionStatePath(sessionId, env)
+  return withFileLock(`${file}.lock`, () => {
+    const next = update(readSessionState(sessionId, env))
+    writeSessionStateUnlocked(file, next)
+    return next
+  })
+}
+
+/**
+ * Serialize a short read-modify-write without ever exposing partial JSON.
+ * A crashed holder is recoverable after 30 seconds; releases compare their
+ * random token under the same cooperating lock discipline before unlinking.
+ */
+const FILE_LOCK_STALE_MS = 30_000
+const FILE_LOCK_WAIT_MS = 1_000
+const FILE_LOCK_POLL_MS = 5
+const lockSleep = new Int32Array(new SharedArrayBuffer(4))
+
+function withFileLock<T>(file: string, action: () => T): T {
+  mkdirSync(path.dirname(file), { recursive: true })
+  const token = randomBytes(12).toString('base64url')
+  const deadline = Date.now() + FILE_LOCK_WAIT_MS
+  for (;;) {
+    try {
+      const handle = openSync(file, 'wx', 0o600)
+      try {
+        writeFileSync(handle, `${JSON.stringify({ token, at: Date.now() })}\n`)
+      } finally {
+        closeSync(handle)
+      }
+      break
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
+      let stale = false
+      try {
+        const held = JSON.parse(readFileSync(file, 'utf8')) as { at?: unknown }
+        stale = typeof held.at !== 'number' || Date.now() - held.at >= FILE_LOCK_STALE_MS
+      } catch {
+        stale = true
+      }
+      if (stale) rmSync(file, { force: true })
+      else if (Date.now() >= deadline) throw new Error(`timed out waiting for state lock ${file}`)
+      else Atomics.wait(lockSleep, 0, 0, FILE_LOCK_POLL_MS)
+    }
+  }
+  try {
+    return action()
+  } finally {
+    try {
+      const held = JSON.parse(readFileSync(file, 'utf8')) as { token?: unknown }
+      if (held.token === token) rmSync(file, { force: true })
+    } catch {
+      // A replaced or externally removed lock is no longer ours to release.
+    }
+  }
 }
 
 /**
@@ -293,52 +372,101 @@ export function pruneAbandonedSessions(
  * pending question, see no `request_id`, and both escalate: one question, two
  * notifications.
  *
- * `wx` is the whole mechanism. Exclusive create is atomic on POSIX, so exactly
- * one process gets the claim and the other steps aside. A claim older than the
- * hook budget is a crashed process rather than a live one, and is broken — the
- * alternative is a stale lock file suppressing every question for that session
- * for ever, which is worse than the duplicate this prevents.
+ * Exclusive create is atomic on POSIX, so exactly one process gets the claim
+ * and the other steps aside. A short guard serializes stale replacement with
+ * contenders and releases; random ownership tokens keep an old holder from
+ * unlinking its replacement. A claim older than the hook budget is a crashed
+ * process rather than a live one and is broken, avoiding permanent suppression.
  */
 const CLAIM_TTL_MS = STOP_BUDGET_SECONDS * 1000
+const heldClaims = new Map<string, string>()
 
 export function claimQuestionPush(
   sessionId: string,
   env: NodeJS.ProcessEnv,
   now: number = Date.now(),
+  beforeStaleReplace?: () => void,
 ): boolean {
   const file = claimPath(sessionId, env)
+  const guard = `${file}.guard`
+  const token = randomBytes(12).toString('base64url')
   mkdirSync(path.dirname(file), { recursive: true })
+  if (!acquireClaimGuard(guard)) return false
   try {
-    writeFileSync(file, `${JSON.stringify({ pid: process.pid, at: now })}\n`, {
-      mode: 0o600,
-      flag: 'wx',
-    })
-    return true
-  } catch {
-    // Held. Break it only if whoever holds it cannot still be running.
     try {
-      const held = JSON.parse(readFileSync(file, 'utf8')) as { at?: unknown }
-      const age = typeof held.at === 'number' ? now - held.at : Number.POSITIVE_INFINITY
-      if (age >= 0 && age < CLAIM_TTL_MS) return false
-    } catch {
-      // Unreadable or corrupt: treat as abandoned.
-    }
-    rmSync(file, { force: true })
-    try {
-      writeFileSync(file, `${JSON.stringify({ pid: process.pid, at: now })}\n`, {
+      writeFileSync(file, `${JSON.stringify({ pid: process.pid, at: now, token })}\n`, {
         mode: 0o600,
         flag: 'wx',
       })
+      heldClaims.set(file, token)
       return true
     } catch {
-      // Someone else broke it first and won. One of us proceeding is the point.
-      return false
+      // Held. Break it only if whoever holds it cannot still be running.
+      try {
+        const held = JSON.parse(readFileSync(file, 'utf8')) as { at?: unknown }
+        const age = typeof held.at === 'number' ? now - held.at : Number.POSITIVE_INFINITY
+        if (age >= 0 && age < CLAIM_TTL_MS) return false
+      } catch {
+        // Unreadable or corrupt: treat as abandoned.
+      }
+      beforeStaleReplace?.()
+      rmSync(file, { force: true })
+      try {
+        writeFileSync(file, `${JSON.stringify({ pid: process.pid, at: now, token })}\n`, {
+          mode: 0o600,
+          flag: 'wx',
+        })
+        heldClaims.set(file, token)
+        return true
+      } catch {
+        return false
+      }
     }
+  } finally {
+    rmSync(guard, { force: true })
   }
 }
 
 export function releaseQuestionPush(sessionId: string, env: NodeJS.ProcessEnv): void {
-  rmSync(claimPath(sessionId, env), { force: true })
+  const file = claimPath(sessionId, env)
+  const token = heldClaims.get(file)
+  if (token === undefined) return
+  const guard = `${file}.guard`
+  if (!acquireClaimGuard(guard)) {
+    heldClaims.delete(file)
+    return
+  }
+  try {
+    try {
+      const held = JSON.parse(readFileSync(file, 'utf8')) as { token?: unknown }
+      if (held.token === token) rmSync(file, { force: true })
+    } catch {
+      // Missing or replaced claims are not ours to release.
+    }
+  } finally {
+    heldClaims.delete(file)
+    rmSync(guard, { force: true })
+  }
+}
+
+/** The guard serializes stale replacement and release; recover a crashed guard. */
+function acquireClaimGuard(file: string): boolean {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const handle = openSync(file, 'wx', 0o600)
+      closeSync(handle)
+      return true
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') return false
+      try {
+        if (Date.now() - statSync(file).mtimeMs < CLAIM_TTL_MS) return false
+      } catch {
+        // A vanished/corrupt guard is safe to retry once.
+      }
+      rmSync(file, { force: true })
+    }
+  }
+  return false
 }
 
 function claimPath(sessionId: string, env: NodeJS.ProcessEnv): string {
@@ -359,12 +487,20 @@ export function writeProjectSession(
   env: NodeJS.ProcessEnv,
   sessionId: string,
   now: number,
+  harness: HookHarness,
 ): void {
   const file = projectSessionPointerPath(cwd, env)
-  mkdirSync(path.dirname(file), { recursive: true })
-  writeFileSync(file, `${JSON.stringify({ session_id: sessionId, updated_at: now })}\n`, {
-    mode: 0o600,
+  withFileLock(`${file}.lock`, () => {
+    atomicWriteFileSync(
+      file,
+      `${JSON.stringify({ session_id: sessionId, updated_at: now, harness })}\n`,
+    )
   })
+}
+
+export interface ProjectSessionPointer {
+  sessionId: string
+  harness: HookHarness
 }
 
 /**
@@ -378,19 +514,55 @@ export function readProjectSession(
   now: number,
   maxAgeMs = 24 * 3600 * 1000,
 ): string | null {
+  return readProjectSessionPointer(cwd, env, now, maxAgeMs)?.sessionId ?? null
+}
+
+export function readProjectSessionPointer(
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  now: number,
+  maxAgeMs = 24 * 3600 * 1000,
+): ProjectSessionPointer | null {
   const file = projectSessionPointerPath(cwd, env)
   if (!existsSync(file)) return null
   try {
     const parsed = JSON.parse(readFileSync(file, 'utf8')) as {
       session_id?: unknown
       updated_at?: unknown
+      harness?: unknown
     }
     if (typeof parsed.session_id !== 'string' || parsed.session_id === '') return null
-    if (typeof parsed.updated_at === 'number' && now - parsed.updated_at > maxAgeMs) return null
-    return parsed.session_id
+    if (typeof parsed.updated_at !== 'number' || now - parsed.updated_at > maxAgeMs) return null
+    if (!(HOOK_HARNESSES as readonly unknown[]).includes(parsed.harness)) return null
+    // A pointer is routing evidence only while its session state still exists
+    // and parses. SessionEnd and explicit cleanup therefore invalidate it even
+    // when a crash prevented the pointer file itself from being removed.
+    const sessionFile = sessionStatePath(parsed.session_id, env)
+    if (!existsSync(sessionFile)) return null
+    const state: unknown = JSON.parse(readFileSync(sessionFile, 'utf8'))
+    if (typeof state !== 'object' || state === null || Array.isArray(state)) return null
+    return { sessionId: parsed.session_id, harness: parsed.harness as HookHarness }
   } catch {
     return null
   }
+}
+
+const HOOK_HARNESSES = ['claude-code', 'codex', 'cursor', 'opencode'] as const
+
+function clearMatchingProjectSession(
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  sessionId: string,
+): void {
+  const file = projectSessionPointerPath(cwd, env)
+  withFileLock(`${file}.lock`, () => {
+    try {
+      const parsed = JSON.parse(readFileSync(file, 'utf8')) as { session_id?: unknown }
+      if (parsed.session_id === sessionId) rmSync(file, { force: true })
+    } catch {
+      // Missing/corrupt is already not a live pointer.
+    }
+  })
 }
 
 /**
@@ -719,12 +891,17 @@ export function parkForRetirement(
 ): void {
   const retirement = retiringQuestion(pending, state)
   if (retirement === null) return
-  const current = readSessionState(sessionId, env)
-  const already = current.retiring ?? []
-  if (already.some((entry) => entry.request_id === retirement.request_id)) return
-  writeSessionState(sessionId, env, {
-    ...current,
-    retiring: [...already, retirement],
+  updateSessionState(sessionId, env, (current) => {
+    const already = current.retiring ?? []
+    const existing = already.findIndex((entry) => entry.request_id === retirement.request_id)
+    if (existing < 0) return { ...current, retiring: [...already, retirement] }
+    const retiring = [...already]
+    // An observed answer is final truth and upgrades an earlier supersession
+    // parked while the submission callback was racing a newer question.
+    if (retirement.state === 'answered' && retiring[existing]!.state !== 'answered') {
+      retiring[existing] = retirement
+    }
+    return { ...current, retiring }
   })
 }
 
@@ -782,7 +959,6 @@ export async function drainRetirements(
   if (queue.length === 0) return []
 
   const retired: string[] = []
-  const remaining: RetiringQuestion[] = []
   for (const entry of queue) {
     await closeQuietly(ctx, entry.request_id)
     const sent = await retire(
@@ -795,17 +971,18 @@ export async function drainRetirements(
       retirementDeviceIds(entry),
       session,
     )
-    if (sent) retired.push(entry.request_id)
-    else remaining.push(entry)
+    if (sent) {
+      retired.push(entry.request_id)
+      // Persist each success before touching the next entry. A later corrupt
+      // record or interrupted process must not resurrect work already done.
+      updateSessionState(sessionId, env, (current) => ({
+        ...current,
+        retiring: (current.retiring ?? []).filter(
+          (candidate) => candidate.request_id !== entry.request_id,
+        ),
+      }))
+    }
   }
-
-  // Re-read rather than reusing the snapshot: `notifai ask` may have parked
-  // another question while these were in flight.
-  const current = readSessionState(sessionId, env)
-  const untouched = (current.retiring ?? []).filter(
-    (entry) => !retired.includes(entry.request_id),
-  )
-  writeSessionState(sessionId, env, { ...current, retiring: untouched.length > 0 ? untouched : [] })
   return retired
 }
 
@@ -825,10 +1002,20 @@ function readOrphanQueue(env: NodeJS.ProcessEnv): OrphanRetirement[] {
   }
 }
 
-function writeOrphanQueue(env: NodeJS.ProcessEnv, queue: OrphanRetirement[]): void {
+function writeOrphanQueueUnlocked(file: string, queue: OrphanRetirement[]): void {
+  atomicWriteFileSync(file, `${JSON.stringify(queue, null, 2)}\n`)
+}
+
+function updateOrphanQueue(
+  env: NodeJS.ProcessEnv,
+  update: (current: OrphanRetirement[]) => OrphanRetirement[],
+): OrphanRetirement[] {
   const file = orphanQueuePath(env)
-  mkdirSync(path.dirname(file), { recursive: true })
-  writeFileSync(file, `${JSON.stringify(queue, null, 2)}\n`, { mode: 0o600 })
+  return withFileLock(`${file}.lock`, () => {
+    const next = update(readOrphanQueue(env))
+    writeOrphanQueueUnlocked(file, next)
+    return next
+  })
 }
 
 /** Move retirements into the global queue; deduped so a retry costs nothing. */
@@ -839,13 +1026,17 @@ export function orphanRetirements(
   now: number,
 ): void {
   if (entries.length === 0) return
-  const queue = readOrphanQueue(env)
-  const known = new Set(queue.map((entry) => entry.request_id))
-  const added = entries
-    .filter((entry) => !known.has(entry.request_id))
-    .map((entry) => ({ ...entry, ...(session !== undefined ? { session } : {}), enqueued_at: now }))
-  if (added.length === 0) return
-  writeOrphanQueue(env, [...queue, ...added].slice(-ORPHAN_QUEUE_CAP))
+  updateOrphanQueue(env, (queue) => {
+    const known = new Set(queue.map((entry) => entry.request_id))
+    const added = entries
+      .filter((entry) => !known.has(entry.request_id))
+      .map((entry) => ({
+        ...entry,
+        ...(session !== undefined ? { session } : {}),
+        enqueued_at: now,
+      }))
+    return [...queue, ...added].slice(-ORPHAN_QUEUE_CAP)
+  })
 }
 
 /**
@@ -867,6 +1058,9 @@ export async function drainOrphanRetirements(
     // and cheap, so treat it as due rather than letting it linger for ever.
     if (age > ORPHAN_TTL_MS) {
       done.push(entry.request_id)
+      updateOrphanQueue(env, (current) =>
+        current.filter((candidate) => candidate.request_id !== entry.request_id),
+      )
       continue
     }
     await closeQuietly(ctx, entry.request_id)
@@ -880,14 +1074,13 @@ export async function drainOrphanRetirements(
       retirementDeviceIds(entry),
       entry.session,
     )
-    if (sent) done.push(entry.request_id)
+    if (sent) {
+      done.push(entry.request_id)
+      updateOrphanQueue(env, (current) =>
+        current.filter((candidate) => candidate.request_id !== entry.request_id),
+      )
+    }
   }
-
-  // Re-read: another session's SessionEnd may have queued more while these were
-  // in flight, and clobbering its write would recreate the very loss this
-  // queue exists to prevent.
-  const current = readOrphanQueue(env).filter((entry) => !done.includes(entry.request_id))
-  writeOrphanQueue(env, current)
   return done
 }
 
@@ -950,22 +1143,30 @@ async function finishPendingAnswer(
   reply: ReplyView,
   continuation: boolean,
 ): Promise<void> {
-  parkForRetirement(sessionId, ctx.env, pending, 'answered')
-  const current = readSessionState(sessionId, ctx.env)
-  const { pending: _pending, continuation: previousContinuation, ...carried } = current
-  void _pending
-
-  writeSessionState(sessionId, ctx.env, {
-    ...carried,
-    ...(continuation
-      ? {
-          continuation: {
-            answered_at: ctx.now(),
-            count:
-              (envelope.stop_hook_active === true ? previousContinuation?.count ?? 0 : 0) + 1,
-          },
-        }
-      : { last_prompt_at: ctx.now() }),
+  const retirement = retiringQuestion(pending, 'answered')
+  updateSessionState(sessionId, ctx.env, (current) => {
+    const retiring = [...(current.retiring ?? [])]
+    if (retirement !== null) {
+      const existing = retiring.findIndex((entry) => entry.request_id === retirement.request_id)
+      if (existing < 0) retiring.push(retirement)
+      else retiring[existing] = retirement
+    }
+    const samePending =
+      current.pending?.question === pending.question &&
+      current.pending?.asked_at === pending.asked_at &&
+      current.pending?.request_id === pending.request_id
+    const next = { ...current, retiring }
+    if (samePending) delete next.pending
+    if (continuation) {
+      next.continuation = {
+        answered_at: ctx.now(),
+        count:
+          (envelope.stop_hook_active === true ? current.continuation?.count ?? 0 : 0) + 1,
+      }
+    } else {
+      next.last_prompt_at = ctx.now()
+    }
+    return next
   })
   await drainRetirements(ctx, sessionId, ctx.env, sessionLabel(ctx, envelope))
 }
@@ -994,7 +1195,9 @@ export async function handleUserPromptSubmit(
     const late = await pollPendingReply(ctx, pending, LATE_PROMPT_POLL_SECONDS)
     if (late.reply !== null) {
       await finishPendingAnswer(ctx, envelope, sessionId, pending, late.reply, false)
-      if (envelope.cwd !== undefined) writeProjectSession(envelope.cwd, ctx.env, sessionId, ctx.now())
+      if (envelope.cwd !== undefined && ctx.harness !== undefined) {
+        writeProjectSession(envelope.cwd, ctx.env, sessionId, ctx.now(), ctx.harness)
+      }
       await drainOrphanRetirements(ctx, ctx.env, ctx.now())
       notes.push(`late answer from ${late.reply.device_name}: ${late.reply.text}`)
       return { stdout: userPromptAnswerOutput(late.reply), notes }
@@ -1006,15 +1209,25 @@ export async function handleUserPromptSubmit(
   // Park before dropping `pending`. If the process dies between these writes,
   // the next hook sees both copies and dedupes them; the old order could die in
   // the gap after erasing the only request/collapse/device identifiers.
-  if (pending !== undefined) parkForRetirement(sessionId, ctx.env, pending, 'answered_elsewhere')
-  const parked = readSessionState(sessionId, ctx.env)
-  writeSessionState(sessionId, ctx.env, {
-    last_prompt_at: ctx.now(),
-    ...(parked.retiring !== undefined ? { retiring: parked.retiring } : {}),
+  updateSessionState(sessionId, ctx.env, (current) => {
+    const retiring = [...(current.retiring ?? [])]
+    if (current.pending !== undefined) {
+      const retirement = retiringQuestion(current.pending, 'answered_elsewhere')
+      if (
+        retirement !== null &&
+        !retiring.some((entry) => entry.request_id === retirement.request_id)
+      ) {
+        retiring.push(retirement)
+      }
+    }
+    return { last_prompt_at: ctx.now(), ...(retiring.length > 0 ? { retiring } : {}) }
   })
-  // The bridge that lets a plain `notifai ask` find its own session: an agent
-  // shell command gets no hook payload and no harness exports the id.
-  if (envelope.cwd !== undefined) writeProjectSession(envelope.cwd, ctx.env, sessionId, ctx.now())
+  // The bridge that lets a plain `notifai ask` find the hook's canonical
+  // session: an agent shell command gets no hook payload, and not every
+  // harness exports an id in the same shape.
+  if (envelope.cwd !== undefined && ctx.harness !== undefined) {
+    writeProjectSession(envelope.cwd, ctx.env, sessionId, ctx.now(), ctx.harness)
+  }
 
   const retired = await drainRetirements(ctx, sessionId, ctx.env, sessionLabel(ctx, envelope))
   const orphaned = await drainOrphanRetirements(ctx, ctx.env, ctx.now())
@@ -1150,16 +1363,28 @@ async function escalate(
     // useful to the next turn, which collects it with `notifai replies`.
     windowSeconds: QUESTION_WINDOW_SECONDS,
     onSubmitted: (live) => {
-      // Re-read: the drain at the top of this hook rewrote the queue, and the
-      // snapshot that entered this hook predates it.
-      writeSessionState(sessionId, ctx.env, {
-        ...readSessionState(sessionId, ctx.env),
-        pending: {
-          ...pending,
-          request_id: live.requestId,
-          collapse_key: live.collapseKey,
-          device_ids: live.devices,
-        },
+      const livePending: PendingQuestion = {
+        ...pending,
+        request_id: live.requestId,
+        collapse_key: live.collapseKey,
+        device_ids: live.devices,
+      }
+      updateSessionState(sessionId, ctx.env, (current) => {
+        const stillCurrent =
+          current.pending?.question === pending.question &&
+          current.pending?.asked_at === pending.asked_at &&
+          current.pending?.request_id === undefined
+        if (stillCurrent) return { ...current, pending: livePending }
+
+        // A newer `notifai ask` won while this submit was in flight. Keep it,
+        // but now that request identifiers exist, preserve the old delivered
+        // question as collectable/retirable instead of overwriting either one.
+        const retirement = retiringQuestion(livePending, 'superseded')!
+        const retiring = [...(current.retiring ?? [])]
+        if (!retiring.some((entry) => entry.request_id === retirement.request_id)) {
+          retiring.push(retirement)
+        }
+        return { ...current, retiring }
       })
     },
   })
@@ -1191,14 +1416,12 @@ async function escalate(
     return { notes }
   }
 
-  await finishPendingAnswer(
-    ctx,
-    envelope,
-    sessionId,
-    readSessionState(sessionId, ctx.env).pending!,
-    asked.reply,
-    true,
-  )
+  await finishPendingAnswer(ctx, envelope, sessionId, {
+    ...pending,
+    request_id: asked.requestId,
+    collapse_key: asked.collapseKey,
+    device_ids: asked.devices,
+  }, asked.reply, true)
   notes.push(`answer from ${asked.reply.device_name}: ${asked.reply.text}`)
   return {
     stdout: stopAnswerOutput(asked.reply),
@@ -1226,6 +1449,7 @@ export function handleSessionEnd(
   const notes: string[] = []
   const sessionId = envelope.session_id
   if (!sessionId) return { notes }
+  if (envelope.cwd !== undefined) clearMatchingProjectSession(envelope.cwd, env, sessionId)
 
   const state = readSessionState(sessionId, env)
   const orphans: RetiringQuestion[] = [...(state.retiring ?? [])]
@@ -1276,16 +1500,26 @@ export function registerQuestion(
   question: PendingQuestion,
   now: number = Date.now(),
 ): void {
-  const state = readSessionState(sessionId, env)
-  if (state.pending !== undefined) parkForRetirement(sessionId, env, state.pending, 'superseded')
-  // Re-read: parkForRetirement wrote the queue we must not clobber.
-  writeSessionState(sessionId, env, {
-    ...readSessionState(sessionId, env),
-    pending: {
-      asked_at: now,
-      ...question,
-      question: question.question.slice(0, MAX_STORED_QUESTION_CHARS),
-    },
+  updateSessionState(sessionId, env, (state) => {
+    const retiring = [...(state.retiring ?? [])]
+    if (state.pending !== undefined) {
+      const retirement = retiringQuestion(state.pending, 'superseded')
+      if (
+        retirement !== null &&
+        !retiring.some((entry) => entry.request_id === retirement.request_id)
+      ) {
+        retiring.push(retirement)
+      }
+    }
+    return {
+      ...state,
+      ...(retiring.length > 0 ? { retiring } : {}),
+      pending: {
+        asked_at: now,
+        ...question,
+        question: question.question.slice(0, MAX_STORED_QUESTION_CHARS),
+      },
+    }
   })
 }
 

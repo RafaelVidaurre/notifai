@@ -30,7 +30,7 @@ export const OPENCODE_PLUGIN_MARKER = '// notifai managed opencode plugin'
 export const OPENCODE_PLUGIN_FILENAME = 'notifai.js'
 
 /** Bump when an installed generated file must be rewritten to remain functional. */
-const OPENCODE_ADAPTER_VERSION = 3
+const OPENCODE_ADAPTER_VERSION = 4
 
 export function opencodePluginDir(
   global: boolean,
@@ -143,6 +143,15 @@ export const NotifAIPlugin = async ({ directory }) => {
   const cwd = typeof directory === "string" && directory.length > 0 ? directory : process.cwd()
 
   return {
+    /** Exact active-harness identity for shell commands such as \`notifai ask\`. */
+    "shell.env": async (input, output) => {
+      output.env.NOTIFAI_ACTIVE_HARNESS = "opencode"
+      const sessionID = input?.sessionID
+      if (typeof sessionID === "string" && sessionID.length > 0) {
+        output.env.NOTIFAI_ACTIVE_SESSION_ID = sessionID
+      }
+    },
+
     /**
      * Presence. The user typing is the signal every harness shares, and it is
      * also what publishes the project -> session pointer \`notifai ask\` reads.
@@ -207,17 +216,19 @@ export function isOurOpencodePlugin(contents: string): boolean {
  */
 export function opencodePluginTarget(
   contents: string,
-): { exec: string; script: string; current: boolean } | null {
+): { exec: string; script: string; current: boolean; timeoutSeconds?: number } | null {
   if (!isOurOpencodePlugin(contents)) return null
   const exec = /^const EXEC = (".*")$/m.exec(contents)?.[1]
   const script = /^const SCRIPT = (".*")$/m.exec(contents)?.[1]
   const version = Number(/^const ADAPTER_VERSION = (\d+)$/m.exec(contents)?.[1] ?? 1)
+  const timeoutMs = Number(/^const TIMEOUT_MS = (\d+)$/m.exec(contents)?.[1] ?? Number.NaN)
   if (exec === undefined || script === undefined) return null
   try {
     return {
       exec: JSON.parse(exec) as string,
       script: JSON.parse(script) as string,
       current: version === OPENCODE_ADAPTER_VERSION,
+      ...(Number.isFinite(timeoutMs) ? { timeoutSeconds: timeoutMs / 1000 } : {}),
     }
   } catch {
     return null

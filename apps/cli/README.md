@@ -68,7 +68,8 @@ notifai doctor
 ```
 
 Reports every part of the setup and names where to start if something is
-wrong. `--json` for machine-readable output.
+wrong. Any `FAIL` line makes the command exit nonzero; informational `--` lines
+do not. `--json` emits the same result with an explicit `exit_code`.
 
 ## Reference
 

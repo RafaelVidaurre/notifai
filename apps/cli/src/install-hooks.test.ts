@@ -97,6 +97,22 @@ describe('hook config', () => {
     expect(config['UserPromptSubmit']?.[0]?.hooks[0]?.timeout).toBe(15)
     expect(config['SessionEnd']?.[0]?.hooks[0]?.timeout).toBe(3)
   })
+
+  it('stamps the exact harness on every generated command', () => {
+    const config = buildHookConfig({
+      execPath: EXEC,
+      scriptPath: SCRIPT,
+      replyTimeoutSeconds: 240,
+      graceSeconds: 0,
+      harness: 'claude-code',
+    })
+    expect(
+      Object.values(config)
+        .flatMap((groups) => groups)
+        .flatMap((group) => group.hooks)
+        .every((handler) => handler.command.includes('--harness claude-code')),
+    ).toBe(true)
+  })
 })
 
 describe('merging into existing settings', () => {
@@ -470,6 +486,13 @@ describe('the OpenCode adapter', () => {
     expect(source).toContain('synthetic: true')
   })
 
+  it('injects an exact active-harness and session marker into OpenCode shells', () => {
+    expect(source).toContain('"shell.env"')
+    expect(source).toContain('NOTIFAI_ACTIVE_HARNESS')
+    expect(source).toContain('NOTIFAI_ACTIVE_SESSION_ID')
+    expect(source).toContain('input.sessionID')
+  })
+
   it('carries the ownership marker so a second checkout replaces it', () => {
     expect(source).toContain(OPENCODE_PLUGIN_MARKER)
     expect(isOurOpencodePlugin(source)).toBe(true)
@@ -493,11 +516,17 @@ describe('the OpenCode adapter', () => {
     // rather than a command line, so answering with the plugin's own path made
     // an ordinary OpenCode install look like a second checkout and turned the
     // duplicate check red on a healthy machine.
-    expect(opencodePluginTarget(source)).toEqual({ exec: EXEC, script: SCRIPT, current: true })
+    expect(opencodePluginTarget(source)).toEqual({
+      exec: EXEC,
+      script: SCRIPT,
+      current: true,
+      timeoutSeconds: 240,
+    })
     expect(opencodePluginTarget(source.replace(/^const ADAPTER_VERSION = .*\n/m, ''))).toEqual({
       exec: EXEC,
       script: SCRIPT,
       current: false,
+      timeoutSeconds: 240,
     })
     expect(opencodePluginTarget('export const SomeoneElse = () => ({})')).toBeNull()
     // Ours, but with the constants edited beyond recognition: no answer beats

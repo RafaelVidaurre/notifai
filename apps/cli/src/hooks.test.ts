@@ -1,4 +1,13 @@
-import { mkdirSync, mkdtempSync, realpathSync, utimesSync, writeFileSync } from 'node:fs'
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import type {
@@ -10,9 +19,11 @@ import type {
 import { describe, expect, it } from 'vitest'
 import type { ApiClient } from './client.js'
 import { EXIT, askCommand, hookRunCommand, type CommandDeps, type CommandIo } from './commands.js'
-import { loadConfig, sanitizeSessionId } from './config.js'
+import { loadConfig, projectSessionPointerPath, sanitizeSessionId } from './config.js'
 import {
   claimQuestionPush,
+  clearSessionState,
+  drainRetirements,
   drainOrphanRetirements,
   isUserAway,
   orphanRetirements,
@@ -21,6 +32,7 @@ import {
   readProjectSession,
   readSessionState,
   registerQuestion,
+  writeProjectSession,
   writeSessionState,
 } from './hooks.js'
 
@@ -46,6 +58,8 @@ interface Recorder {
   closed: string[]
   /** Simulates an offline machine; retirement has to survive one. */
   failSubmits?: boolean
+  /** Runs while an agent_question submit is in flight, before onSubmitted. */
+  beforeQuestionSubmit?: () => void
 }
 
 function fakeClient(recorder: Recorder, replies: ReplyView[]): ApiClient {
@@ -81,6 +95,7 @@ function fakeClient(recorder: Recorder, replies: ReplyView[]): ApiClient {
     health: async () => true,
     submit: async (body) => {
       if (recorder.failSubmits === true) throw new Error('offline')
+      if (body.draft.event === 'agent_question') recorder.beforeQuestionSubmit?.()
       recorder.submitted.push(body)
       submissions += 1
       recorder.receipts.push(`req_hook_${submissions}`)
@@ -896,7 +911,12 @@ describe('ask registration', () => {
     // harness's own id, so the pointer must outrank the env var.
     const h = harness()
     h.deps.env['NOTIFAI_SESSION'] = 'my-label'
-    await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: 'real1', cwd: h.deps.cwd }))
+    await hookRunCommand(
+      h.deps,
+      'user-prompt-submit',
+      stdin({ session_id: 'real1', cwd: h.deps.cwd }),
+      'claude-code',
+    )
     expect(askCommand(h.deps, 'Ship it?', {})).toBe(EXIT.ok)
     expect(readSessionState('real1', h.env).pending?.question).toBe('Ship it?')
     expect(readSessionState('my-label', h.env).pending).toBeUndefined()
@@ -934,12 +954,34 @@ describe('user-prompt-submit hook', () => {
     expect(readSessionState('s10', h.env).last_prompt_at).toBe(NOW)
   })
 
+  it('diagnoses malformed or truncated hook input instead of silently doing nothing', async () => {
+    const h = harness()
+
+    expect(await hookRunCommand(h.deps, 'user-prompt-submit', async () => '{"session_id":')).toBe(
+      EXIT.ok,
+    )
+
+    expect(h.io.errLines.join('\n')).toMatch(/malformed|truncated/i)
+  })
+
+  it('explains when a missing machine credential makes a hook skip routing', async () => {
+    const h = harness()
+    h.deps.store.load = () => null
+
+    expect(
+      await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: 'unpaired' })),
+    ).toBe(EXIT.ok)
+
+    expect(h.io.errLines.join('\n')).toMatch(/not paired|credential/i)
+  })
+
   it('preserves a delivered question through ask replacement and prompt transition', async () => {
     const h = harness([], 900)
     await hookRunCommand(
       h.deps,
       'user-prompt-submit',
       stdin({ session_id: 'transition', cwd: h.deps.cwd }),
+      'claude-code',
     )
     expect(askCommand(h.deps, 'Ship it?', { choice: ['Yes', 'No'] })).toBe(EXIT.ok)
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'transition', cwd: h.deps.cwd }))
@@ -970,6 +1012,7 @@ describe('user-prompt-submit hook', () => {
       h.deps,
       'user-prompt-submit',
       stdin({ session_id: 'transition', cwd: h.deps.cwd }),
+      'claude-code',
     )
 
     const retirement = h.recorder.submitted.find(
@@ -1055,12 +1098,20 @@ describe('user-prompt-submit hook', () => {
     const project = realpathSync(viaSymlink)
     if (project === viaSymlink) return // no symlink on this platform; nothing to prove
 
-    await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: 's14', cwd: viaSymlink }))
+    await hookRunCommand(
+      h.deps,
+      'user-prompt-submit',
+      stdin({ session_id: 's14', cwd: viaSymlink }),
+      'claude-code',
+    )
 
     expect(readProjectSession(project, h.env, NOW)).toBe('s14')
     expect(readProjectSession(viaSymlink, h.env, NOW)).toBe('s14')
     // A pointer older than a day is not evidence of a live session.
     expect(readProjectSession(project, h.env, NOW + 2 * 24 * 3600 * 1000)).toBeNull()
+
+    clearSessionState('s14', h.env)
+    expect(readProjectSession(project, h.env, NOW)).toBeNull()
   })
 })
 
@@ -1074,6 +1125,26 @@ describe('session-end hook', () => {
     expect(code).toBe(EXIT.ok)
     expect(readSessionState('s12', h.env)).toEqual({})
     expect(h.recorder.closed).toEqual([])
+  })
+
+  it('clears only the ending session project pointer', async () => {
+    const h = harness()
+    await hookRunCommand(
+      h.deps,
+      'user-prompt-submit',
+      stdin({ session_id: 'ending', cwd: h.deps.cwd }),
+      'claude-code',
+    )
+    expect(readProjectSession(h.deps.cwd, h.env, NOW)).toBe('ending')
+
+    await hookRunCommand(
+      h.deps,
+      'session-end',
+      stdin({ session_id: 'ending', cwd: h.deps.cwd }),
+      'claude-code',
+    )
+
+    expect(readProjectSession(h.deps.cwd, h.env, NOW)).toBeNull()
   })
 
   it('preserves incomplete live state and reports why it cannot retire it', async () => {
@@ -1242,6 +1313,113 @@ describe('pruning abandoned session state', () => {
   })
 })
 
+describe('durable state writes', () => {
+  function sessionFile(h: Harness, sessionId: string): string {
+    return path.join(
+      h.env['XDG_STATE_HOME'] as string,
+      'notifai',
+      'sessions',
+      `${sanitizeSessionId(sessionId)}.json`,
+    )
+  }
+
+  it('recovers a truncated state file with one complete atomic document', () => {
+    const h = harness()
+    const file = sessionFile(h, 'truncated')
+    mkdirSync(path.dirname(file), { recursive: true })
+    writeFileSync(file, '{"pending":')
+    expect(readSessionState('truncated', h.env)).toEqual({})
+
+    writeSessionState('truncated', h.env, { last_prompt_at: NOW })
+
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ last_prompt_at: NOW })
+    expect(readdirSync(path.dirname(file)).filter((name) => name.includes('.tmp'))).toEqual([])
+  })
+
+  it('refuses a session-state symlink instead of writing through it', () => {
+    const h = harness()
+    const file = sessionFile(h, 'linked')
+    const target = path.join(path.dirname(file), 'target.json')
+    mkdirSync(path.dirname(file), { recursive: true })
+    writeFileSync(target, '{"untouched":true}\n')
+    symlinkSync(target, file)
+
+    expect(() => writeSessionState('linked', h.env, { last_prompt_at: NOW })).toThrow(/symlink/)
+    expect(readFileSync(target, 'utf8')).toBe('{"untouched":true}\n')
+  })
+
+  it('refuses project-pointer and retirement-queue symlinks too', () => {
+    const h = harness()
+    writeSessionState('linked-pointer', h.env, { last_prompt_at: NOW })
+    const target = path.join(h.env['XDG_STATE_HOME'] as string, 'pointer-target.json')
+    writeFileSync(target, '{"untouched":true}\n')
+    const pointer = projectSessionPointerPath(h.deps.cwd, h.env)
+    mkdirSync(path.dirname(pointer), { recursive: true })
+    symlinkSync(target, pointer)
+
+    expect(() =>
+      writeProjectSession(h.deps.cwd, h.env, 'linked-pointer', NOW, 'claude-code'),
+    ).toThrow(/symlink/)
+    expect(readFileSync(target, 'utf8')).toBe('{"untouched":true}\n')
+
+    const queueTarget = path.join(h.env['XDG_STATE_HOME'] as string, 'queue-target.json')
+    const queue = path.join(h.env['XDG_STATE_HOME'] as string, 'notifai', 'retire-queue.json')
+    writeFileSync(queueTarget, '[]\n')
+    symlinkSync(queueTarget, queue)
+    expect(() =>
+      orphanRetirements(
+        h.env,
+        [
+          {
+            request_id: 'req_linked',
+            collapse_key: 'collapse-linked',
+            device_ids: ['dev_iphone'],
+            question: 'Still there?',
+            state: 'expired',
+          },
+        ],
+        'linked-pointer',
+        NOW,
+      ),
+    ).toThrow(/symlink/)
+    expect(readFileSync(queueTarget, 'utf8')).toBe('[]\n')
+  })
+
+  it('persists each successful retirement before a later corrupt entry interrupts the drain', async () => {
+    const h = harness()
+    writeSessionState('partial-drain', h.env, {
+      retiring: [
+        {
+          request_id: 'req_good',
+          collapse_key: 'collapse-good',
+          device_ids: ['dev_iphone'],
+          question: 'First?',
+          state: 'expired',
+        },
+        {
+          request_id: 'req_bad',
+          collapse_key: 'collapse-bad',
+          device_ids: [],
+          question: 'Second?',
+          state: 'expired',
+        },
+      ],
+    })
+    const ctx = {
+      client: h.deps.clientFactory('https://test.notifai.invalid', 'Bearer x'),
+      config: loadConfig({ cwd: h.deps.cwd, env: h.env }),
+    }
+
+    await expect(drainRetirements(ctx, 'partial-drain', h.env)).rejects.toThrow(
+      /missing its device identifiers/,
+    )
+
+    expect(readSessionState('partial-drain', h.env).retiring?.map((entry) => entry.request_id)).toEqual([
+      'req_bad',
+    ])
+  })
+})
+
 /**
  * Path-independent ownership stops the usual cause
  * of two handlers firing; this stops the consequence when something else does.
@@ -1270,6 +1448,19 @@ describe('two hooks racing one question', () => {
     expect(claimQuestionPush('race3', h.env, REAL)).toBe(true)
   })
 
+  it('serializes a contender that arrives while a stale claim is being replaced', () => {
+    const h = harness()
+    claimQuestionPush('race-break', h.env, REAL - 10 * 60_000)
+    let contender: ReturnType<typeof claimQuestionPush> | undefined
+
+    const recovered = claimQuestionPush('race-break', h.env, REAL, () => {
+      contender = claimQuestionPush('race-break', h.env, REAL)
+    })
+
+    expect(contender).toBeDefined()
+    expect([recovered, contender].filter(Boolean)).toHaveLength(1)
+  })
+
   it('does not let two sessions block each other', () => {
     const h = harness()
     expect(claimQuestionPush('race4a', h.env, REAL)).toBe(true)
@@ -1287,5 +1478,47 @@ describe('two hooks racing one question', () => {
 
     expect(h.recorder.submitted).toHaveLength(0)
     expect(h.io.errLines.join(" ")).toContain('already handling')
+  })
+})
+
+describe('question registration racing a Stop submission', () => {
+  it('preserves a newer question when the older submit publishes its request id', async () => {
+    const h = harness([], 900)
+    writeSessionState('submit-race', h.env, { last_prompt_at: AWAY })
+    registerQuestion('submit-race', h.env, { question: 'Old question?' }, NOW)
+    h.recorder.beforeQuestionSubmit = () => {
+      h.recorder.beforeQuestionSubmit = undefined
+      registerQuestion('submit-race', h.env, { question: 'New question?' }, NOW + 1)
+    }
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'submit-race' }))
+
+    const state = readSessionState('submit-race', h.env)
+    expect(state.pending?.question).toBe('New question?')
+    expect(state.retiring).toContainEqual(
+      expect.objectContaining({ request_id: 'req_hook_1', state: 'superseded' }),
+    )
+  })
+
+  it('keeps the newer question when the older in-flight question receives an answer', async () => {
+    const h = harness([reply({ text: 'Old answer' })], 900)
+    writeSessionState('answer-race', h.env, { last_prompt_at: AWAY })
+    registerQuestion('answer-race', h.env, { question: 'Old question?' }, NOW)
+    h.recorder.beforeQuestionSubmit = () => {
+      h.recorder.beforeQuestionSubmit = undefined
+      registerQuestion('answer-race', h.env, { question: 'New question?' }, NOW + 1)
+    }
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'answer-race' }))
+
+    const state = readSessionState('answer-race', h.env)
+    expect(state.pending?.question).toBe('New question?')
+    expect(
+      h.recorder.submitted.find(
+        (entry) =>
+          entry.draft.event === 'question_retired' &&
+          entry.draft.lifecycle?.retires_request_id === 'req_hook_1',
+      )?.draft.lifecycle?.state,
+    ).toBe('answered')
   })
 })

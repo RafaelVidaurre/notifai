@@ -1,18 +1,11 @@
 import {
-  closeSync,
   existsSync,
-  fsyncSync,
-  lstatSync,
-  mkdirSync,
-  openSync,
   readFileSync,
   statSync,
-  renameSync,
-  unlinkSync,
-  writeFileSync,
 } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { atomicWriteFileSync } from './atomic-file.js'
 import { opencodePluginPath, opencodePluginTarget } from './opencode-plugin.js'
 
 /**
@@ -73,11 +66,11 @@ export function hookCommand(
   execPath: string,
   scriptPath: string,
   event: string,
-  harness?: 'cursor',
+  harness?: Harness,
 ): string {
   return (
     `${quote(execPath)} ${quote(scriptPath)} hook ${event} ${OWNER_MARKER}` +
-    (harness === 'cursor' ? ' --harness cursor' : '')
+    (harness === undefined ? '' : ` --harness ${harness}`)
   )
 }
 
@@ -114,6 +107,8 @@ export interface BuildOptions {
   replyTimeoutSeconds: number
   /** Seconds the question waits in the terminal before it is pushed at all. */
   graceSeconds: number
+  /** The installed adapter stamps its exact harness into project pointers. */
+  harness?: Harness
 }
 
 /** Command-hook harnesses kill at 600s; generated adapters use the same safe ceiling. */
@@ -139,7 +134,7 @@ export function buildHookConfig(options: BuildOptions): HookConfig {
         hooks: [
           {
             type: 'command',
-            command: hookCommand(execPath, scriptPath, 'user-prompt-submit'),
+            command: hookCommand(execPath, scriptPath, 'user-prompt-submit', options.harness),
             // Claude Code caps UserPromptSubmit at 30s; stay well inside it so
             // a slow network can never delay the user's own prompt.
             timeout: 15,
@@ -152,7 +147,7 @@ export function buildHookConfig(options: BuildOptions): HookConfig {
         hooks: [
           {
             type: 'command',
-            command: hookCommand(execPath, scriptPath, 'stop'),
+            command: hookCommand(execPath, scriptPath, 'stop', options.harness),
             timeout: blockingTimeout,
           },
         ],
@@ -163,7 +158,7 @@ export function buildHookConfig(options: BuildOptions): HookConfig {
         hooks: [
           {
             type: 'command',
-            command: hookCommand(execPath, scriptPath, 'session-end'),
+            command: hookCommand(execPath, scriptPath, 'session-end', options.harness),
             // Both harnesses give SessionEnd a ~1-3s budget, so this handler
             // only touches local state.
             timeout: 3,
@@ -568,49 +563,7 @@ export function removeHooks(existing: SettingsDocument, scriptPath: string): Mer
  * support.
  */
 export function applyPlan(file: string, document: SettingsDocument | CursorSettingsDocument): void {
-  mkdirSync(path.dirname(file), { recursive: true })
-  const mode = targetMode(file)
-  const temp = path.join(path.dirname(file), `.${path.basename(file)}.notifai-${process.pid}.tmp`)
-
-  const handle = openSync(temp, 'w', mode)
-  try {
-    writeFileSync(handle, `${JSON.stringify(document, null, 2)}\n`)
-    fsyncSync(handle)
-  } finally {
-    closeSync(handle)
-  }
-  try {
-    renameSync(temp, file)
-  } catch (err) {
-    // Leaving the temp behind would be a second, quieter mess on top of the
-    // failure the caller is about to hear about.
-    try {
-      unlinkSync(temp)
-    } catch {
-      // Nothing useful to do; the rename error is the one that matters.
-    }
-    throw err
-  }
-}
-
-/** Mode to preserve, or the mode for a new file. Refuses a non-regular target. */
-function targetMode(file: string): number {
-  let stat
-  try {
-    stat = lstatSync(file)
-  } catch (err) {
-    // A settings file can carry tokens, so a file we create is ours alone.
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 0o600
-    throw err
-  }
-  if (stat.isSymbolicLink()) {
-    throw new Error(
-      `${file} is a symlink; refusing to write through it. Replace it with a regular file, ` +
-        'or install to a different location.',
-    )
-  }
-  if (!stat.isFile()) throw new Error(`${file} is not a regular file; refusing to replace it.`)
-  return stat.mode & 0o777
+  atomicWriteFileSync(file, `${JSON.stringify(document, null, 2)}\n`)
 }
 
 export function loadSettings(file: string): SettingsDocument {
@@ -633,6 +586,8 @@ export interface InstalledHandler {
   /** Index of the handler within its group. */
   handlerIndex: number
   command: string
+  /** Declared process lifetime, used to detect config/install drift. */
+  timeout?: number
 }
 
 export interface Installation {
@@ -687,6 +642,7 @@ export function findInstallations(cwd: string, env: NodeJS.ProcessEnv = process.
             groupIndex: 0,
             handlerIndex: 0,
             command: hookCommand(target.exec, target.script, hookEvent),
+            ...(target.timeoutSeconds === undefined ? {} : { timeout: target.timeoutSeconds }),
           })),
         })
         continue
@@ -699,7 +655,10 @@ export function findInstallations(cwd: string, env: NodeJS.ProcessEnv = process.
           continue
         }
         const handlers = locateCursorHandlers(document)
-        if (handlers.length > 0) found.push({ harness, file, global, handlers })
+        if (handlers.length > 0) {
+          const problems = harnessMarkerProblems(harness, handlers)
+          found.push({ harness, file, global, handlers, ...(problems.length > 0 ? { problems } : {}) })
+        }
         continue
       }
       let document: SettingsDocument
@@ -709,10 +668,21 @@ export function findInstallations(cwd: string, env: NodeJS.ProcessEnv = process.
         continue
       }
       const handlers = locateHandlers(document)
-      if (handlers.length > 0) found.push({ harness, file, global, handlers })
+      if (handlers.length > 0) {
+        const problems = harnessMarkerProblems(harness, handlers)
+        found.push({ harness, file, global, handlers, ...(problems.length > 0 ? { problems } : {}) })
+      }
     }
   }
   return found
+}
+
+function harnessMarkerProblems(harness: Harness, handlers: InstalledHandler[]): string[] {
+  return handlers.every((handler) => handler.command.includes(`--harness ${harness}`))
+    ? []
+    : [
+        `installed commands do not stamp the ${harness} routing identity; rerun \`notifai hooks install --harness ${harness}\``,
+      ]
 }
 
 function locateCursorHandlers(document: CursorSettingsDocument): InstalledHandler[] {
@@ -720,7 +690,13 @@ function locateCursorHandlers(document: CursorSettingsDocument): InstalledHandle
   for (const [event, eventHandlers] of Object.entries(document.hooks ?? {})) {
     eventHandlers.forEach((handler, handlerIndex) => {
       if (isNotifaiCommand(handler.command)) {
-        handlers.push({ event, groupIndex: 0, handlerIndex, command: handler.command })
+        handlers.push({
+          event,
+          groupIndex: 0,
+          handlerIndex,
+          command: handler.command,
+          ...(handler.timeout === undefined ? {} : { timeout: handler.timeout }),
+        })
       }
     })
   }
@@ -733,7 +709,13 @@ function locateHandlers(document: SettingsDocument): InstalledHandler[] {
     groups.forEach((group, groupIndex) => {
       group.hooks?.forEach((handler, handlerIndex) => {
         if (isNotifaiHandler(handler)) {
-          handlers.push({ event, groupIndex, handlerIndex, command: handler.command })
+          handlers.push({
+            event,
+            groupIndex,
+            handlerIndex,
+            command: handler.command,
+            ...(handler.timeout === undefined ? {} : { timeout: handler.timeout }),
+          })
         }
       })
     })

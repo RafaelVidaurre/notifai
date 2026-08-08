@@ -35,7 +35,7 @@ import {
   type CommandSpinner,
 } from './commands.js'
 import { applyPlan, buildHookConfig } from './install-hooks.js'
-import { writeProjectSession, writeSessionState } from './hooks.js'
+import { readSessionState, writeProjectSession, writeSessionState } from './hooks.js'
 import type { NativeSkill, NativeSkills, SkillScope } from './native-skills.js'
 
 class CapturedIo implements CommandIo {
@@ -547,10 +547,10 @@ describe('command contracts', () => {
       XDG_CONFIG_HOME: path.join(root, 'config'),
       XDG_STATE_HOME: path.join(root, 'state'),
     }
-    writeProjectSession(root, deps.env, 'pending-session', Date.now())
     writeSessionState('pending-session', deps.env, {
       pending: { question: 'Deploy?', request_id: receipt.request_id },
     })
+    writeProjectSession(root, deps.env, 'pending-session', Date.now(), 'codex')
 
     expect(await repliesCommand(deps, undefined, { pending: true })).toBe(EXIT.ok)
     expect(io.outLines).toEqual([
@@ -1805,7 +1805,7 @@ describe('init', () => {
       ),
     ).toBe(EXIT.ok)
     const doctorOut = doctorIo.outLines.join('\n')
-    expect(doctorOut).toMatch(/ok\s+Delivery proof:/)
+    expect(doctorOut).toMatch(/--\s+Delivery proof:/)
     expect(doctorOut).toContain('receipt proof needs an iPhone')
     expect(doctorOut).not.toMatch(/FAIL\s+Delivery proof:/)
   })
@@ -2025,7 +2025,8 @@ describe('asking before the hooks have ever run', () => {
     const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
 
     expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
-    writeProjectSession(cwd, env, 'codex-other-thread', 42)
+    writeSessionState('codex-other-thread', env, { last_prompt_at: 42 })
+    writeProjectSession(cwd, env, 'codex-other-thread', 42, 'codex')
     io.outLines = []
 
     expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
@@ -2047,7 +2048,8 @@ describe('asking before the hooks have ever run', () => {
     const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
 
     expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
-    writeProjectSession(cwd, env, 'codex-current-thread', 42)
+    writeSessionState('codex-current-thread', env, { last_prompt_at: 42 })
+    writeProjectSession(cwd, env, 'codex-current-thread', 42, 'codex')
     io.outLines = []
 
     expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.ok)
@@ -2095,11 +2097,163 @@ describe('asking before the hooks have ever run', () => {
     expect(hooksInstallCommand(deps, { harness: 'claude-code', execPath, scriptPath })).toBe(EXIT.ok)
     io.outLines = []
 
-    await doctorCommand(deps, {})
+    expect(await doctorCommand(deps, {})).toBe(EXIT.failed)
     const said = io.outLines.join(' ')
     expect(said).toContain(`installed from ${SKILLS_SOURCE} in the global scope`)
     expect(said).toMatch(/active Codex/i)
     expect(said).toContain('notifai hooks install --harness codex')
+  })
+
+  it('refuses a Claude Code pointer owned by another live session', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-active-claude-mismatch-'))
+    const io = new CapturedIo()
+    const env = {
+      XDG_CONFIG_HOME: path.join(cwd, 'config'),
+      XDG_STATE_HOME: path.join(cwd, 'state'),
+      CLAUDE_CONFIG_DIR: path.join(cwd, 'claude-home'),
+      CLAUDECODE: '1',
+      CLAUDE_CODE_SESSION_ID: 'claude-current',
+    }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
+    expect(hooksInstallCommand(deps, { harness: 'claude-code', execPath, scriptPath })).toBe(
+      EXIT.ok,
+    )
+    writeSessionState('claude-other', env, { last_prompt_at: 42 })
+    writeProjectSession(cwd, env, 'claude-other', 42, 'claude-code')
+    io.outLines = []
+
+    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
+    expect(io.errLines.join(' ')).toMatch(/another Claude Code session/i)
+  })
+
+  it('accepts a Claude Code subprocess when its documented session id owns the pointer', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-active-claude-child-'))
+    const io = new CapturedIo()
+    const env = {
+      XDG_CONFIG_HOME: path.join(cwd, 'config'),
+      XDG_STATE_HOME: path.join(cwd, 'state'),
+      CLAUDE_CONFIG_DIR: path.join(cwd, 'claude-home'),
+      CLAUDECODE: '1',
+      CLAUDE_CODE_CHILD_SESSION: '1',
+      CLAUDE_CODE_SESSION_ID: 'claude-parent-loop',
+    }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
+    expect(hooksInstallCommand(deps, { harness: 'claude-code', execPath, scriptPath })).toBe(
+      EXIT.ok,
+    )
+    writeSessionState('claude-parent-loop', env, { last_prompt_at: 42 })
+    writeProjectSession(cwd, env, 'claude-parent-loop', 42, 'claude-code')
+    io.outLines = []
+
+    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.ok)
+    expect(readSessionState('claude-parent-loop', env).pending?.question).toBe('Ship it?')
+  })
+
+  it('uses the OpenCode adapter marker instead of its config-directory variable', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-active-opencode-'))
+    const io = new CapturedIo()
+    const env = {
+      XDG_CONFIG_HOME: path.join(cwd, 'config'),
+      XDG_STATE_HOME: path.join(cwd, 'state'),
+      OPENCODE_CONFIG_DIR: path.join(cwd, 'opencode-home'),
+      NOTIFAI_ACTIVE_HARNESS: 'opencode',
+      NOTIFAI_ACTIVE_SESSION_ID: 'opencode-current',
+    }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
+    expect(hooksInstallCommand(deps, { harness: 'opencode', execPath, scriptPath })).toBe(EXIT.ok)
+    writeSessionState('opencode-other', env, { last_prompt_at: 42 })
+    writeProjectSession(cwd, env, 'opencode-other', 42, 'opencode')
+    io.outLines = []
+
+    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
+    expect(io.errLines.join(' ')).toMatch(/another OpenCode session/i)
+  })
+
+  it('recognizes Cursor only from its active-agent marker', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-active-cursor-'))
+    const io = new CapturedIo()
+    const env = {
+      XDG_CONFIG_HOME: path.join(cwd, 'config'),
+      XDG_STATE_HOME: path.join(cwd, 'state'),
+      CURSOR_AGENT: '1',
+    }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
+    expect(hooksInstallCommand(deps, { harness: 'cursor', execPath, scriptPath })).toBe(EXIT.ok)
+    writeSessionState('cursor-live', env, { last_prompt_at: 42 })
+    writeProjectSession(cwd, env, 'cursor-live', 42, 'cursor')
+    io.outLines = []
+
+    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.ok)
+    expect(readSessionState('cursor-live', env).pending?.question).toBe('Ship it?')
+  })
+
+  it('fails doctor when another harness looks healthy but the active Claude Code session does not', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-active-claude-doctor-'))
+    const io = new CapturedIo()
+    const env = {
+      XDG_CONFIG_HOME: path.join(cwd, 'config'),
+      XDG_STATE_HOME: path.join(cwd, 'state'),
+      CODEX_HOME: path.join(cwd, 'codex-home'),
+      CLAUDE_CONFIG_DIR: path.join(cwd, 'claude-home'),
+      CLAUDECODE: '1',
+      CLAUDE_CODE_SESSION_ID: 'claude-current',
+    }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
+    writeSessionState('codex-live', env, { last_prompt_at: 42 })
+    writeProjectSession(cwd, env, 'codex-live', 42, 'codex')
+    io.outLines = []
+
+    expect(await doctorCommand(deps, {})).toBe(EXIT.failed)
+    expect(io.outLines.join('\n')).toMatch(/FAIL\s+Question routing:.*active Claude Code/is)
+  })
+
+  it('shows resolved question-routing values with their winning config sources', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-doctor-routing-config-'))
+    mkdirSync(path.join(cwd, '.notifai'), { recursive: true })
+    writeFileSync(
+      path.join(cwd, '.notifai', 'config.local.toml'),
+      'ask_notifications = false\nrequire_idle = false\naway_after_seconds = 45\nask_grace_seconds = 90\nhook_reply_timeout_seconds = 120\n',
+    )
+    const io = new CapturedIo()
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env: {} }
+
+    await doctorCommand(deps, {})
+
+    const said = io.outLines.join('\n')
+    expect(said).toContain('Question routing settings:')
+    expect(said).toContain('ask_notifications=false (project-local:')
+    expect(said).toContain('require_idle=false (project-local:')
+    expect(said).toContain('away_after_seconds=45 (project-local:')
+    expect(said).toContain('ask_grace_seconds=90 (project-local:')
+    expect(said).toContain('hook_reply_timeout_seconds=120 (project-local:')
+  })
+
+  it('fails doctor when runtime waits outgrow an installed Stop timeout', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-doctor-timeout-drift-'))
+    const io = new CapturedIo()
+    const env = { XDG_STATE_HOME: path.join(cwd, 'state'), CLAUDE_CONFIG_DIR: path.join(cwd, 'claude') }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env }
+    expect(hooksInstallCommand(deps, { harness: 'claude-code', execPath, scriptPath })).toBe(
+      EXIT.ok,
+    )
+    mkdirSync(path.join(cwd, '.notifai'), { recursive: true })
+    writeFileSync(path.join(cwd, '.notifai', 'config.local.toml'), 'ask_grace_seconds = 400\n')
+    io.outLines = []
+
+    expect(await doctorCommand(deps, {})).toBe(EXIT.failed)
+    expect(io.outLines.join('\n')).toMatch(/FAIL\s+hooks \(timeout\)/)
+    expect(io.outLines.join('\n')).toContain('notifai hooks install --harness claude-code')
+  })
+
+  it('documents the failing exit contract in doctor JSON', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-doctor-exit-json-'))
+    const io = new CapturedIo()
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env: {} }
+
+    expect(await doctorCommand(deps, { json: true })).toBe(EXIT.failed)
+    const payload = JSON.parse(io.outLines[0] ?? '{}') as { ok?: boolean; exit_code?: number }
+    expect(payload).toMatchObject({ ok: false, exit_code: EXIT.failed })
   })
 
   it('tells Claude Code to send a prompt without falsely requiring a restart', () => {

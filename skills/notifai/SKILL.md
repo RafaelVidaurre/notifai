@@ -206,9 +206,11 @@ running in, and **hooks (fired)** must say a session in this directory ran
 them. An installed skill or hooks for a different harness do not satisfy that
 preflight. If doctor names a missing active-harness installation, an unfired
 hook, or a pointer owned by another session, follow its exact bounded recovery
-and do not register the question yet. In Codex this check is fail-closed against
-`CODEX_THREAD_ID`, so a stale Claude Code or previous-Codex pointer cannot
-silently receive the question.
+and do not register the question yet. The check is fail-closed against the
+active harness and, where it exports one, its exact session id: Codex uses
+`CODEX_THREAD_ID`, Claude Code uses `CLAUDE_CODE_SESSION_ID`, and the OpenCode
+adapter supplies its own session marker. A stale or different-harness pointer
+cannot silently receive the question.
 
 ```bash
 notifai ask "Which environment should I deploy to?" --choice "Staging,Production,Cancel"
@@ -414,7 +416,10 @@ whether a session has run them here in the last 24 hours, and whether an old
 build left a stale handler behind. Network-dependent checks appear only when
 their prerequisites are reachable. It can re-read evidence for the verification
 request that `init` saved; it cannot create proof by itself. Run it before
-concluding that notifications are broken. If it reports a missing credential,
+concluding that notifications are broken. Its exit status is nonzero whenever
+any displayed line is `FAIL`; JSON output includes the same result as
+`exit_code`. Informational `--` lines do not make the command fail. If it
+reports a missing credential,
 the user must run `notifai login` themselves (it opens a browser approval).
 
 Keep wording channel-neutral: the same notification may surface on a phone,
