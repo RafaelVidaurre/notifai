@@ -1568,7 +1568,12 @@ describe('init', () => {
     const deps = {
       ...makeDeps(io, client),
       cwd,
-      env: { XDG_CONFIG_HOME: path.join(cwd, 'config'), XDG_STATE_HOME: path.join(cwd, 'state') },
+      env: {
+        XDG_CONFIG_HOME: path.join(cwd, 'config'),
+        XDG_STATE_HOME: path.join(cwd, 'state'),
+        CODEX_HOME: path.join(cwd, 'codex'),
+        CLAUDE_CONFIG_DIR: path.join(cwd, 'claude'),
+      },
     }
 
     expect(await initCommand(deps, {})).toBe(EXIT.ok)
