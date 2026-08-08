@@ -224,7 +224,15 @@ export async function loginCommand(
   const intervalMs = Math.max(begin.poll_interval_seconds, 1) * 1000
   const now = deps.now ?? Date.now
   const sleep = deps.sleep ?? ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)))
-  const spinner = interactive ? await deps.io.spinner?.('Waiting for approval…') : null
+  const approvalWaitMessage = (): string => {
+    const remainingSec = Math.max(0, Math.ceil((expiresAt - now()) / 1000))
+    const minutes = Math.floor(remainingSec / 60)
+    const seconds = remainingSec % 60
+    const remaining =
+      minutes > 0 ? `${minutes}m ${seconds.toString().padStart(2, '0')}s` : `${seconds}s`
+    return `Waiting for approval… code ${begin.code} · ${remaining} left`
+  }
+  const spinner = interactive ? await deps.io.spinner?.(approvalWaitMessage()) : null
   while (now() < expiresAt) {
     await sleep(intervalMs)
     let poll
@@ -232,7 +240,7 @@ export async function loginCommand(
       poll = await client.pollPairing(begin.pairing_id, pollVerifier)
     } catch (err) {
       if (err instanceof NetworkError) {
-        spinner?.message('Connection lost — retrying…')
+        spinner?.message(`Connection lost — retrying… code ${begin.code}`)
         continue
       }
       spinner?.error('Pairing failed')
@@ -264,7 +272,7 @@ export async function loginCommand(
       return EXIT.auth
     }
     if (poll.status === 'expired') break
-    spinner?.message('Waiting for approval…')
+    spinner?.message(approvalWaitMessage())
   }
   spinner?.error('Pairing expired')
   deps.io.err('Pairing expired before it was approved. Run `notifai login` again.')
@@ -730,12 +738,12 @@ export async function statusCommand(
       if (d.companion_receipt.state === 'observed') {
         const latency = d.companion_receipt.latency_ms
         deps.io.out(
-          `    Companion Receipt: observed at ${d.companion_receipt.observed_at}` +
+          `    Companion Receipt (the app's delivery confirmation): observed at ${d.companion_receipt.observed_at}` +
             (latency === null ? '' : ` (${formatElapsed(latency)} after Provider Acceptance)`),
         )
       } else {
         deps.io.out(
-          '    Companion Receipt: unknown — not observed; this is not a failure or proof of non-receipt',
+          "    Companion Receipt (the app's delivery confirmation): unknown — not observed; this is not a failure or proof of non-receipt",
         )
       }
       for (const e of d.events) {
@@ -1299,11 +1307,11 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
           `nothing is pushed. A question registered with \`notifai ask\` stays in the terminal ` +
           `until its ${config.ask_grace_seconds.value}s grace window, counted from registration, ` +
           `has elapsed; it goes to your devices only while the machine also meets the idle threshold. ` +
-          `Set \`require_idle = false\` to be notified even while you are working.`
+          `Run \`notifai config set require_idle false\` to be notified even while you are working.`
       : `A question registered with \`notifai ask\` stays in the terminal for ` +
           `${config.ask_grace_seconds.value}s from registration and then goes to your devices ` +
           `whether or not you are at this machine ` +
-          `(\`require_idle = false\`).`,
+          `(\`notifai config set require_idle false\` is already in effect).`,
   )
   if (config.require_idle.value) {
     deps.io.out(
@@ -2057,7 +2065,7 @@ async function runSetupProof(deps: CommandDeps): Promise<GapCloseResult> {
     ) ?? candidates[0]
   if (!target) {
     deps.io.err(
-      'Setup proof needs a receipt-capable iPhone. The current macOS notification path does not emit Companion Receipts.',
+      "Setup proof needs a receipt-capable iPhone. The current macOS notification path does not emit Companion Receipts (the app's delivery confirmation).",
     )
     return 'pending'
   }
@@ -2089,7 +2097,9 @@ async function runSetupProof(deps: CommandDeps): Promise<GapCloseResult> {
   const sleep = deps.sleep ?? ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)))
   const deadline = now() + PROOF_TIMEOUT_MS
   const spinner = deps.io.interactive === true
-    ? await deps.io.spinner?.('Waiting for a Companion Receipt…')
+    ? await deps.io.spinner?.(
+        "Waiting for a Companion Receipt (the app's delivery confirmation)…",
+      )
     : null
   let lastError: unknown = null
   let replacedMissingProof = false
@@ -2140,11 +2150,11 @@ async function runSetupProof(deps: CommandDeps): Promise<GapCloseResult> {
     await sleep(Math.min(PROOF_POLL_MS, Math.max(0, deadline - now())))
   }
 
-  spinner?.error('Companion Receipt not observed yet')
+  spinner?.stop('Delivery confirmation not observed yet')
   if (lastError instanceof NetworkError) deps.io.err(lastError.message)
-  deps.io.err(
-    `No Companion Receipt was observed for ${proof.request_id} within ${PROOF_TIMEOUT_MS / 1000}s. ` +
-      'That is not proof of non-receipt; re-run `notifai init` to check this same notification again.',
+  deps.io.out(
+    `Provider accepted the notification; Companion Receipt (the app's delivery confirmation) for ${proof.request_id} was not observed within ${PROOF_TIMEOUT_MS / 1000}s. ` +
+      'Proof may still arrive — re-run `notifai init` and it will re-check this same notification.',
   )
   return 'pending'
 }
@@ -2270,19 +2280,15 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
         break
       }
 
-      // Its to launch, theirs to complete. Offering to start the sign-in is
-      // useful only when someone is demonstrably watching; an agent never
-      // reaches this prompt or opens a browser.
+      // Its to launch, theirs to complete. Running `init` is the consent; announce
+      // and open rather than re-asking. An agent never reaches this path.
       if (
         remedy.by === 'user-here' &&
         remedy.interactive === true &&
         deps.io.interactive === true
       ) {
         attempted.add(state.id)
-        if (!(await deps.io.confirm('Sign in now? (opens your browser)', true))) {
-          stop = true
-          break
-        }
+        deps.io.out('Opening your browser to approve this machine — Ctrl-C to stop.')
         if ((await loginCommand(deps, {})) !== EXIT.ok) {
           failed = true
           stop = true
@@ -2340,7 +2346,9 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
   deps.io.out('')
   deps.io.out(`Next: ${blocker.title} — ${blocker.detail}`)
   deps.io.out(`  ${remedyLine(blocker)}`)
-  if (blocker.remedy?.by === 'user-elsewhere') {
+  // Both "do it here" and "do it elsewhere" leave setup mid-journey; re-run is
+  // how the rest is recovered either way.
+  if (blocker.remedy?.by === 'user-elsewhere' || blocker.remedy?.by === 'user-here') {
     deps.io.out('  Then re-run `notifai init` and it will pick up from here.')
   }
   await deps.io.outro?.('One step remains (above)')
@@ -2380,9 +2388,8 @@ async function contractCheck(client: ApiClient): Promise<{ name: string; ok: boo
       ok: false,
       detail:
         local !== undefined && remote < local
-          ? `server speaks schema v${remote}, this CLI speaks v${local} — the server needs deploying, ` +
-            'until then sends carrying newer fields are rejected'
-          : `server speaks schema v${remote}, this CLI speaks v${local} — update the CLI`,
+          ? `server speaks schema v${remote}, this CLI speaks v${local} — the service is being updated; try again later`
+          : `server speaks schema v${remote}, this CLI speaks v${local} — update the CLI: npm install -g @raidiant/notifai`,
     }
   } catch (err) {
     return {
@@ -2513,22 +2520,23 @@ export async function assessReadiness(
     )
   }
 
+  let accountEmail: string | null = null
+  let accountLookupFailed = false
   if (!credential || !reachable) {
     const why = !credential ? 'this machine is not paired' : 'the server is unreachable'
     states.push({ id: 'auth', title: 'Account', status: 'unknown', detail: `not checked — ${why}` })
-    states.push({ id: 'devices', title: 'Your devices', status: 'unknown', detail: `not checked — ${why}` })
   } else {
     const client = makeClient(deps, baseUrl, `Bearer nfm_${credential.machineId}.${credential.secret}`)
     accountClient = client
     try {
-      const [{ devices }, accountEmail] = await Promise.all([
+      const [{ devices }, email] = await Promise.all([
         client.listDevices(),
         Promise.resolve()
           .then(async () => (await client.accessStatus()).email)
           .catch(() => null as string | null),
       ])
       accountDevices = devices
-      const ready = devices.filter(deviceCanReceive)
+      accountEmail = email
       states.push({
         id: 'auth',
         title: 'Account',
@@ -2537,41 +2545,10 @@ export async function assessReadiness(
           ? `machine ${credential.machineId} accepted (${accountEmail})`
           : `machine ${credential.machineId} accepted`,
       })
-      states.push(
-        ready.length > 0
-          ? {
-              id: 'devices',
-              title: 'Your devices',
-              status: 'ready',
-              detail: `${ready.map((d) => d.display_name).join(', ')} ready to receive`,
-            }
-          : {
-              id: 'devices',
-              title: 'Your devices',
-              status: 'gap',
-              // The one gap that cannot be closed from this terminal, and the
-              // likeliest place a first setup is abandoned. Naming which of
-              // the three sub-states it is matters: "install the app" is
-              // useless advice to someone who installed it and denied the
-              // permission prompt. The live bridge is /support on the
-              // dashboard origin — not a placeholder, and not typed by hand.
-              detail:
-                devices.length === 0
-                  ? `nothing registered yet; install Notifai on iPhone or Mac via ${supportPageUrl(baseUrl)}`
-                  : `${devices.map((d) => `${d.display_name} (${d.permission_status})`).join(', ')} — registered but not able to receive`,
-              remedy: {
-                by: 'user-elsewhere',
-                summary: deviceInstallRemedy({
-                  baseUrl,
-                  email: accountEmail,
-                  devices,
-                }),
-              },
-            },
-      )
     } catch (err) {
       // A credential the server rejects is revocation, not absence, and the
       // remedy is the same sign-in either way.
+      accountLookupFailed = true
       states.push({
         id: 'auth',
         title: 'Account',
@@ -2583,13 +2560,56 @@ export async function assessReadiness(
           command: 'notifai login',
         },
       })
-      states.push({ id: 'devices', title: 'Your devices', status: 'unknown', detail: 'not checked — sign-in failed' })
     }
   }
 
+  // Optional setup that works without a companion device must appear before the
+  // device gap: init stops at the first user-elsewhere blocker, and hooks/skill
+  // are reachable without a phone.
   states.push(...hookStates(deps))
-
   states.push(await skillReadiness(deps, options.skillScope))
+
+  if (!credential || !reachable) {
+    const why = !credential ? 'this machine is not paired' : 'the server is unreachable'
+    states.push({ id: 'devices', title: 'Your devices', status: 'unknown', detail: `not checked — ${why}` })
+  } else if (accountLookupFailed || accountDevices === null) {
+    states.push({ id: 'devices', title: 'Your devices', status: 'unknown', detail: 'not checked — sign-in failed' })
+  } else {
+    const devices = accountDevices
+    const ready = devices.filter(deviceCanReceive)
+    states.push(
+      ready.length > 0
+        ? {
+            id: 'devices',
+            title: 'Your devices',
+            status: 'ready',
+            detail: `${ready.map((d) => d.display_name).join(', ')} ready to receive`,
+          }
+        : {
+            id: 'devices',
+            title: 'Your devices',
+            status: 'gap',
+            // The one gap that cannot be closed from this terminal, and the
+            // likeliest place a first setup is abandoned. Naming which of
+            // the three sub-states it is matters: "install the app" is
+            // useless advice to someone who installed it and denied the
+            // permission prompt. The live bridge is /support on the
+            // dashboard origin — not a placeholder, and not typed by hand.
+            detail:
+              devices.length === 0
+                ? `nothing registered yet; install Notifai on iPhone or Mac via ${supportPageUrl(baseUrl)}`
+                : `${devices.map((d) => `${d.display_name} (${d.permission_status})`).join(', ')} — registered but not able to receive`,
+            remedy: {
+              by: 'user-elsewhere',
+              summary: deviceInstallRemedy({
+                baseUrl,
+                email: accountEmail,
+                devices,
+              }),
+            },
+          },
+    )
+  }
 
   states.push(await setupProofState(deps, config, accountClient, accountDevices))
 
@@ -2631,7 +2651,7 @@ async function setupProofState(
       title: 'Delivery proof',
       status: 'optional-gap',
       detail:
-        'unprovable in this release — notifications can reach your Mac, but the macOS path does not emit Companion Receipts (the app delivery confirmation); receipt proof needs an iPhone',
+        "unprovable in this release — notifications can reach your Mac, but the macOS path does not emit Companion Receipts (the app's delivery confirmation); receipt proof needs an iPhone",
       remedy: {
         by: 'user-elsewhere',
         summary: 'receipt proof needs an iPhone in this release (notifications still reach this Mac)',
@@ -2646,10 +2666,12 @@ async function setupProofState(
       id: 'proof',
       title: 'Delivery proof',
       status: 'gap',
-      detail: 'no Companion Receipt has proven this project on this machine yet',
+      detail:
+        "no Companion Receipt (the app's delivery confirmation) has proven this project on this machine yet",
       remedy: {
         by: 'cli',
-        summary: 'send one real verification notification and wait for its Companion Receipt',
+        summary:
+          "send one real verification notification and wait for its Companion Receipt (the app's delivery confirmation)",
         command: 'notifai init',
       },
     }
@@ -2663,14 +2685,14 @@ async function setupProofState(
         id: 'proof',
         title: 'Delivery proof',
         status: 'ready',
-        detail: `Companion Receipt observed from ${observed.delivery.device_name} at ${observed.observedAt} (${proof.request_id})`,
+        detail: `Companion Receipt (the app's delivery confirmation) observed from ${observed.delivery.device_name} at ${observed.observedAt} (${proof.request_id})`,
       }
     }
     return {
       id: 'proof',
       title: 'Delivery proof',
       status: 'gap',
-      detail: `${proof.request_id} was sent, but its Companion Receipt is still unknown`,
+      detail: `${proof.request_id} was sent, but its Companion Receipt (the app's delivery confirmation) is still unknown`,
       remedy: {
         by: 'cli',
         summary: 'check the same verification notification again',
@@ -3050,10 +3072,16 @@ export function realIo(env: NodeJS.ProcessEnv = process.env): CommandIo {
       else log.error(message)
     },
     openUrl: (url) => {
-      const command =
-        process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open'
       try {
-        spawn(command, [url], { stdio: 'ignore', detached: true }).unref()
+        if (process.platform === 'darwin') {
+          spawn('open', [url], { stdio: 'ignore', detached: true }).unref()
+        } else if (process.platform === 'win32') {
+          // `start` is a cmd builtin; spawn('start', …) cannot work on Windows.
+          // Empty title argument keeps URLs with special characters intact.
+          spawn('cmd', ['/c', 'start', '', url], { stdio: 'ignore', detached: true }).unref()
+        } else {
+          spawn('xdg-open', [url], { stdio: 'ignore', detached: true }).unref()
+        }
       } catch {
         // Browser opening is best-effort; the URL is printed anyway.
       }

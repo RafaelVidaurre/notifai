@@ -577,7 +577,7 @@ describe('delivery evidence status', () => {
     expect(await statusCommand(makeDeps(io, client), 'req_status_test', {})).toBe(EXIT.ok)
     const said = io.outLines.join('\n')
     expect(said).toContain('Provider Acceptance: accepted')
-    expect(said).toContain('Companion Receipt: unknown')
+    expect(said).toContain("Companion Receipt (the app's delivery confirmation): unknown")
     expect(said).toContain('not a failure')
     expect(said).toContain('attempt_started')
   })
@@ -595,7 +595,7 @@ describe('delivery evidence status', () => {
 
     expect(await statusCommand(makeDeps(io, client), 'req_status_test', {})).toBe(EXIT.ok)
     const said = io.outLines.join('\n')
-    expect(said).toContain('Companion Receipt: observed')
+    expect(said).toContain("Companion Receipt (the app's delivery confirmation): observed")
     expect(said).toContain('11m 27s after Provider Acceptance')
   })
 })
@@ -813,8 +813,8 @@ describe('interactive command UX', () => {
       },
     ])
     expect(io.spinnerEvents).toEqual([
-      'start:Waiting for approval…',
-      'message:Waiting for approval…',
+      'start:Waiting for approval… code ABCD-EFGH · 10s left',
+      'message:Waiting for approval… code ABCD-EFGH · 9s left',
       'stop:Machine "workstation" approved',
     ])
     expect(io.outLines).toEqual([])
@@ -1102,6 +1102,7 @@ describe('init', () => {
     const out = io.outLines.join('\n')
     expect(out).toContain('Next: This machine')
     expect(out).toContain('notifai login')
+    expect(out).toContain('Then re-run `notifai init` and it will pick up from here.')
     // The device gap is real and downstream; it must stay hidden until the
     // sign-in that would let anyone actually check it has happened.
     expect(out).not.toContain('companion app')
@@ -1341,7 +1342,10 @@ describe('init', () => {
     expect(io.outLines.join('\n')).toContain('notifai login')
   })
 
-  it('offers a present human the sign-in and respects a refusal', async () => {
+  it('announces sign-in for a present human without re-confirming', async () => {
+    // Running `init` is the consent; re-asking "Sign in now?" is noise.
+    // Ctrl-C is the escape hatch (announced). Here beginPairing fails so we
+    // still end on the credential Next line with a re-run hint.
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-human-'))
     const asked: string[] = []
     const io = new (class extends CapturedIo {
@@ -1351,16 +1355,24 @@ describe('init', () => {
         return false
       }
     })()
+    const client = {
+      health: async () => true,
+      beginPairing: async () => {
+        throw new NetworkError('offline for test')
+      },
+    } as unknown as ApiClient
     const deps: CommandDeps = {
-      ...makeDeps(io, {} as ApiClient),
+      ...makeDeps(io, client),
       cwd,
       store: { load: () => null, save: () => {}, clear: () => {}, describe: () => 'empty store' },
     }
 
-    expect(await initCommand(deps, {})).toBe(EXIT.ok)
-    expect(asked.some((q) => q.includes('Sign in'))).toBe(true)
-    // Refused, so it stays the next step rather than being treated as done.
-    expect(io.outLines.join('\n')).toContain('notifai login')
+    expect(await initCommand(deps, {})).toBe(EXIT.failed)
+    expect(asked.some((q) => q.includes('Sign in'))).toBe(false)
+    const out = io.outLines.join('\n')
+    expect(out).toContain('Opening your browser to approve this machine — Ctrl-C to stop.')
+    expect(out).toContain('Next: This machine')
+    expect(out).toContain('Then re-run `notifai init` and it will pick up from here.')
   })
 
   it('never prompts or opens a browser when an agent runs it unattended', async () => {
@@ -1412,6 +1424,46 @@ describe('init', () => {
     expect(out).toContain('sign in with the same email as this account (alpha@example.com)')
     expect(out).toContain('install Notifai on iPhone or Mac via https://test.notifai.invalid/support')
     expect(out.match(/^Next:/gm)).toHaveLength(1)
+  })
+
+  it('offers hooks and skill before stopping at a phone-less device gap', async () => {
+    // P2.1: optionals that work without a phone must not be trapped behind the
+    // user-elsewhere device blocker.
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-optionals-first-'))
+    const asked: string[] = []
+    const io = new (class extends CapturedIo {
+      interactive = true
+      override async confirm(question: string) {
+        asked.push(question)
+        return false
+      }
+    })()
+    const client = {
+      health: async () => true,
+      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+      listDevices: async () => ({ devices: [] }),
+      accessStatus: async () => ({
+        status: 'active',
+        reason: 'alpha_grant',
+        expires_at: null,
+        email: 'alpha@example.com',
+      }),
+    } as unknown as ApiClient
+    const deps = {
+      ...makeDeps(io, client),
+      cwd,
+      env: { XDG_CONFIG_HOME: path.join(cwd, 'config'), XDG_STATE_HOME: path.join(cwd, 'state') },
+    }
+
+    expect(await initCommand(deps, {})).toBe(EXIT.ok)
+    expect(asked.some((q) => q.includes('hooks'))).toBe(true)
+    expect(asked.some((q) => q.includes('skill'))).toBe(true)
+    const out = io.outLines.join('\n')
+    expect(out).toContain('Next: Your devices')
+    // Device wait prompts only after optionals have been considered.
+    expect(asked.indexOf(asked.find((q) => q.includes('hooks'))!)).toBeLessThan(
+      asked.findIndex((q) => q.includes('Wait here') || q.includes('Open install')),
+    )
   })
 
   it.each([
@@ -1489,7 +1541,9 @@ describe('init', () => {
     expect(io.notes.some((n) => n.message.includes('I will wait up to 10 minutes'))).toBe(true)
     expect(io.spinnerEvents).toContain('stop:iPhone is ready to receive')
     expect(io.spinnerEvents).toContain('stop:Receipt observed from iPhone')
-    expect(io.outLines.join('\n')).toContain('Companion Receipt observed from iPhone')
+    expect(io.outLines.join('\n')).toContain(
+      "Companion Receipt (the app's delivery confirmation) observed from iPhone",
+    )
     expect(io.outLines.join('\n')).toContain('All set.')
     expect(submitCalls).toBe(1)
     expect(submittedDraft?.draft.event).toBe('setup_verified')
@@ -1630,7 +1684,8 @@ describe('init', () => {
     expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.failed)
     expect(submitCalls).toBe(1)
     expect(io.outLines.join('\n')).toContain('Next: Delivery proof')
-    expect(io.errLines.join('\n')).toContain('not proof of non-receipt')
+    expect(io.outLines.join('\n')).toContain('Provider accepted the notification')
+    expect(io.outLines.join('\n')).toContain('Proof may still arrive')
 
     io.outLines = []
     io.errLines = []
@@ -1644,7 +1699,9 @@ describe('init', () => {
     expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.ok)
     expect(submitCalls).toBe(2)
     expect(io.outLines.join('\n')).toContain('saved proof had expired; sent replacement req_replacement')
-    expect(io.outLines.join('\n')).toContain('Companion Receipt observed from iPhone')
+    expect(io.outLines.join('\n')).toContain(
+      "Companion Receipt (the app's delivery confirmation) observed from iPhone",
+    )
   })
 
   it('reports a proof-state write failure instead of crashing or sending twice', async () => {
@@ -2108,7 +2165,7 @@ describe('a server behind this CLI', () => {
     expect(said).not.toMatch(/older than this CLI/)
   })
 
-  it('doctor says plainly that the server needs deploying', async () => {
+  it('doctor uses alpha-user wording when the server is behind the CLI', async () => {
     const io = new CapturedIo()
     const client = {
       health: async () => true,
@@ -2129,7 +2186,8 @@ describe('a server behind this CLI', () => {
     const said = io.outLines.concat(io.errLines).join(' ')
     // The label is the user's word for it; the detail is what must survive.
     expect(said).toMatch(/Protocol version/)
-    expect(said).toMatch(/needs deploying/)
+    expect(said).toMatch(/service is being updated/)
+    expect(said).not.toMatch(/needs deploying/)
   })
 
   it('doctor is quiet when both sides agree', async () => {

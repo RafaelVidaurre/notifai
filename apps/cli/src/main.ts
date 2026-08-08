@@ -92,6 +92,31 @@ const program = new Command('notifai')
   .description('Send native device notifications from agents and local programs')
   .version(version())
 
+// Setup leads: `init` is the single entry command for first-run friendliness.
+program
+  .command('init')
+  .description(
+    'Set up Notifai here, idempotently: sign-in, project id, hooks, device readiness, live receipt proof. ' +
+      'Interactive at a human terminal; never prompts otherwise (agents: pass flags)',
+  )
+  .option('--project-id <id>', 'project identifier slug (default: derived from the directory name)')
+  .option('--skills', 'install/update the agent skill from its pinned public release')
+  .option('--no-skills', 'suppress the optional agent-skill status line')
+  .option('--skills-scope <scope>', 'unattended skill scope: project or global')
+  .option('--hooks', 'install harness hooks for registered-question routing')
+  .option('--no-hooks', 'skip the hooks without being asked')
+  .action(async (opts: { projectId?: string; skills?: boolean; skillsScope?: SkillScope; hooks?: boolean }) => {
+    process.exit(await initCommand(deps, opts))
+  })
+
+program
+  .command('doctor')
+  .description('Audit config, credential, server, contract, device, hook, and saved receipt proof (no live send)')
+  .option('--json', 'machine-readable output')
+  .action(async (opts: { json?: boolean }) => {
+    process.exit(await doctorCommand(deps, opts))
+  })
+
 program
   .command('login')
   .description('Pair this machine with your Notifai account via browser approval')
@@ -321,29 +346,5 @@ config
       process.exit(await configSetCommand(deps, key, value, opts))
     },
   )
-
-program
-  .command('init')
-  .description(
-    'Set up Notifai here, idempotently: sign-in, project id, hooks, device readiness, live receipt proof. ' +
-      'Interactive at a human terminal; never prompts otherwise (agents: pass flags)',
-  )
-  .option('--project-id <id>', 'project identifier slug (default: derived from the directory name)')
-  .option('--skills', 'install/update the agent skill from its pinned public release')
-  .option('--no-skills', 'suppress the optional agent-skill status line')
-  .option('--skills-scope <scope>', 'unattended skill scope: project or global')
-  .option('--hooks', 'install harness hooks for registered-question routing')
-  .option('--no-hooks', 'skip the hooks without being asked')
-  .action(async (opts: { projectId?: string; skills?: boolean; skillsScope?: SkillScope; hooks?: boolean }) => {
-    process.exit(await initCommand(deps, opts))
-  })
-
-program
-  .command('doctor')
-  .description('Audit config, credential, server, contract, device, hook, and saved receipt proof (no live send)')
-  .option('--json', 'machine-readable output')
-  .action(async (opts: { json?: boolean }) => {
-    process.exit(await doctorCommand(deps, opts))
-  })
 
 await program.parseAsync(process.argv)
