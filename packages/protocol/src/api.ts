@@ -42,6 +42,12 @@ export interface AccountAccessResponse {
   reason: AccountAccessReason
   /** Alpha grants are temporary; future sources may also carry an expiry. */
   expires_at: string | null
+  /**
+   * The account's sign-in email when the server knows it. Used at the
+   * companion-device hop so install/sign-in copy can name the exact address
+   * that must match — never guess, and omit only when the server has none.
+   */
+  email: string | null
 }
 
 // ---------------------------------------------------------------------------

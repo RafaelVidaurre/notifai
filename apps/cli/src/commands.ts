@@ -350,7 +350,16 @@ export async function devicesCommand(deps: CommandDeps, flags: { json?: boolean 
       return EXIT.ok
     }
     if (result.devices.length === 0) {
-      deps.io.out('No devices. Install a Notifai companion app on a device and sign in.')
+      const supportUrl = supportPageUrl(authed.baseUrl)
+      let email: string | null = null
+      try {
+        email = (await authed.client.accessStatus()).email
+      } catch {
+        // Best-effort: the empty-state copy still points at /support without it.
+      }
+      deps.io.out(
+        `No devices yet. Install Notifai from ${supportUrl}, ${sameAccountSignInLine(email)}, and allow notifications.`,
+      )
       return EXIT.ok
     }
     for (const d of result.devices) {
@@ -1657,10 +1666,46 @@ interface SetupProofRecord {
   started_at: string
 }
 
-const DEVICE_BRIDGE_TIMEOUT_MS = 5 * 60 * 1000
+/** Long enough for a first TestFlight install; keep-waiting extends another budget. */
+const DEVICE_BRIDGE_TIMEOUT_MS = 10 * 60 * 1000
 const DEVICE_BRIDGE_POLL_MS = 2_000
 const PROOF_TIMEOUT_MS = 30_000
 const PROOF_POLL_MS = 1_000
+
+function supportPageUrl(baseUrl: string): string {
+  return `${baseUrl.replace(/\/$/, '')}/support`
+}
+
+function formatWaitBudget(milliseconds: number): string {
+  const minutes = Math.round(milliseconds / 60_000)
+  return minutes === 1 ? '1 minute' : `${minutes} minutes`
+}
+
+/** Same-account line for the device hop; prefers the real email when known. */
+function sameAccountSignInLine(email: string | null | undefined): string {
+  return email
+    ? `sign in with the same email as this account (${email})`
+    : 'sign in with the same email as this account'
+}
+
+function deviceInstallRemedy(options: {
+  baseUrl: string
+  email: string | null
+  devices: readonly RoutableDevice[]
+}): string {
+  const support = supportPageUrl(options.baseUrl)
+  const sameEmail = sameAccountSignInLine(options.email)
+  if (options.devices.length === 0) {
+    return (
+      `open the install steps at ${support} on that device (or your phone’s browser), ` +
+      `install Notifai, ${sameEmail}, and allow notifications`
+    )
+  }
+  if (options.devices.some((d) => d.permission_status === 'denied')) {
+    return 'allow notifications for Notifai in that device’s system settings'
+  }
+  return 'open Notifai on that device and allow its notification prompt'
+}
 
 function setupProofPath(deps: CommandDeps): string {
   let projectDir = path.resolve(deps.cwd)
@@ -1828,55 +1873,104 @@ function deviceBridgeMessage(devices: readonly RoutableDevice[]): string {
 
 /**
  * Observe the supported Device Installation path while the user finishes the
- * app-side work. There is deliberately no invented QR or download URL here:
- * this release exposes neither an App Store/TestFlight URL nor a device-pairing
- * endpoint, and a placeholder bridge is worse than an explicit boundary.
+ * app-side work. The live bridge is the dashboard `/support` page (TestFlight
+ * steps). Interactive runs offer to open it so the user never types the URL;
+ * non-interactive/agent paths only print plain text and never wait on a prompt.
+ *
+ * The wait budget is stated up front. On expiry we say the *timer* expired —
+ * not the setup — and offer another budget when a human is present. Agents
+ * never hang: this whole path is gated on `io.interactive`, and keep-waiting
+ * uses `confirm` which resolves the safe default when not interactive.
  */
 async function waitForReadyDevice(deps: CommandDeps, state: ReadinessState): Promise<GapCloseResult> {
   const remedy = state.remedy
   if (deps.io.interactive !== true || remedy?.by !== 'user-elsewhere') return 'pending'
 
+  const config = loadConfig({ cwd: deps.cwd, env: deps.env })
+  const authed = authedClient(deps, config)
+  if (!authed) {
+    deps.io.err('Could not start the companion-device wait: this machine is not signed in.')
+    return 'failed'
+  }
+
+  const budgetLabel = formatWaitBudget(DEVICE_BRIDGE_TIMEOUT_MS)
+  const supportUrl = supportPageUrl(authed.baseUrl)
   await deps.io.note?.(
-    `${state.detail}\n${remedy.summary}`,
+    [
+      state.detail,
+      remedy.summary,
+      `Install steps (no typing): ${supportUrl}`,
+      `I will wait up to ${budgetLabel} for a companion device to become ready.`,
+    ].join('\n'),
     'Finish setup on your companion device',
   )
+
+  // Open the real support page so the user never has to type the URL. Decline
+  // is fine — the URL remains in the note and in the Next: line if they leave.
+  if (await deps.io.confirm('Open install instructions in your browser?', true)) {
+    deps.io.openUrl(supportUrl)
+  }
+
   if (!(await deps.io.confirm('Wait here while you finish that on your device?', true))) {
+    deps.io.out(
+      `OK — finish device setup when you can (install steps: ${supportUrl}), then re-run \`notifai init\`.`,
+    )
     return 'pending'
   }
 
-  const config = loadConfig({ cwd: deps.cwd, env: deps.env })
-  const authed = authedClient(deps, config)
-  if (!authed) return 'failed'
   const now = deps.now ?? Date.now
-  const sleep = deps.sleep ?? ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)))
-  const deadline = now() + DEVICE_BRIDGE_TIMEOUT_MS
-  const spinner = await deps.io.spinner?.('Waiting for a companion device…')
+  const sleep =
+    deps.sleep ??
+    ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)))
+  const spinner = await deps.io.spinner?.(`Waiting up to ${budgetLabel} for a companion device…`)
   let lastDevices: RoutableDevice[] = []
+  let deadline = now() + DEVICE_BRIDGE_TIMEOUT_MS
 
-  while (now() < deadline) {
-    try {
-      const response = await authed.client.listDevices()
-      lastDevices = response.devices
-      const ready = response.devices.find(deviceCanReceive)
-      if (ready) {
-        spinner?.stop(`${ready.display_name} is ready to receive`)
-        return 'closed'
+  for (;;) {
+    while (now() < deadline) {
+      try {
+        const response = await authed.client.listDevices()
+        lastDevices = response.devices
+        const ready = response.devices.find(deviceCanReceive)
+        if (ready) {
+          spinner?.stop(`${ready.display_name} is ready to receive`)
+          return 'closed'
+        }
+        spinner?.message(deviceBridgeMessage(response.devices))
+      } catch (err) {
+        if (!(err instanceof NetworkError)) {
+          spinner?.error('Could not check companion readiness')
+          reportError(deps, err)
+          return 'failed'
+        }
+        spinner?.message('Connection lost — still watching…')
       }
-      spinner?.message(deviceBridgeMessage(response.devices))
-    } catch (err) {
-      if (!(err instanceof NetworkError)) {
-        spinner?.error('Could not check companion readiness')
-        reportError(deps, err)
-        return 'failed'
-      }
-      spinner?.message('Connection lost — still watching…')
+      await sleep(Math.min(DEVICE_BRIDGE_POLL_MS, Math.max(0, deadline - now())))
     }
-    await sleep(Math.min(DEVICE_BRIDGE_POLL_MS, Math.max(0, deadline - now())))
-  }
 
-  spinner?.error('No companion device became ready')
-  deps.io.err(deviceBridgeMessage(lastDevices).replace(/…$/, '.'))
-  return 'pending'
+    // Timer expired — setup did not. Offer another budget only when a human
+    // can answer; confirm() already returns the fallback for agents, so this
+    // never hangs unattended even if interactive were mis-set.
+    spinner?.error(`The ${budgetLabel} wait timer expired`)
+    deps.io.err(
+      `The ${budgetLabel} wait timer expired — setup is not finished, only this wait.`,
+    )
+    deps.io.err(deviceBridgeMessage(lastDevices).replace(/…$/, '.'))
+    deps.io.err(
+      `Re-run \`notifai init\` later and it will pick up from here (install steps: ${supportUrl}).`,
+    )
+
+    const keepWaiting = await deps.io.confirm(
+      `Keep waiting for another ${budgetLabel}?`,
+      false,
+    )
+    if (!keepWaiting) {
+      deps.io.out('Stopping the wait. Device setup can continue; re-run `notifai init` when ready.')
+      return 'pending'
+    }
+    spinner?.message(`Waiting another ${budgetLabel} for a companion device…`)
+    deadline = now() + DEVICE_BRIDGE_TIMEOUT_MS
+  }
 }
 
 function setupProofDraft(
@@ -2427,14 +2521,21 @@ export async function assessReadiness(
     const client = makeClient(deps, baseUrl, `Bearer nfm_${credential.machineId}.${credential.secret}`)
     accountClient = client
     try {
-      const { devices } = await client.listDevices()
+      const [{ devices }, accountEmail] = await Promise.all([
+        client.listDevices(),
+        Promise.resolve()
+          .then(async () => (await client.accessStatus()).email)
+          .catch(() => null as string | null),
+      ])
       accountDevices = devices
       const ready = devices.filter(deviceCanReceive)
       states.push({
         id: 'auth',
         title: 'Account',
         status: 'ready',
-        detail: `machine ${credential.machineId} accepted`,
+        detail: accountEmail
+          ? `machine ${credential.machineId} accepted (${accountEmail})`
+          : `machine ${credential.machineId} accepted`,
       })
       states.push(
         ready.length > 0
@@ -2452,19 +2553,19 @@ export async function assessReadiness(
               // likeliest place a first setup is abandoned. Naming which of
               // the three sub-states it is matters: "install the app" is
               // useless advice to someone who installed it and denied the
-              // permission prompt.
+              // permission prompt. The live bridge is /support on the
+              // dashboard origin — not a placeholder, and not typed by hand.
               detail:
                 devices.length === 0
-                  ? 'nothing registered yet; invited Alpha testers install Notifai from their private TestFlight invitation on iPhone or Mac'
+                  ? `nothing registered yet; install Notifai on iPhone or Mac via ${supportPageUrl(baseUrl)}`
                   : `${devices.map((d) => `${d.display_name} (${d.permission_status})`).join(', ')} — registered but not able to receive`,
               remedy: {
                 by: 'user-elsewhere',
-                summary:
-                  devices.length === 0
-                    ? 'open your Notifai TestFlight invitation on that device, install the app, sign in with the same account, and allow notifications'
-                    : devices.some((d) => d.permission_status === 'denied')
-                      ? 'allow notifications for Notifai in that device’s system settings'
-                      : 'open Notifai on that device and allow its notification prompt',
+                summary: deviceInstallRemedy({
+                  baseUrl,
+                  email: accountEmail,
+                  devices,
+                }),
               },
             },
       )

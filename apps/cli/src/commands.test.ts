@@ -41,6 +41,7 @@ import type { NativeSkill, NativeSkills, SkillScope } from './native-skills.js'
 class CapturedIo implements CommandIo {
   outLines: string[] = []
   errLines: string[] = []
+  openedUrls: string[] = []
 
   out(line: string) {
     this.outLines.push(line)
@@ -54,12 +55,16 @@ class CapturedIo implements CommandIo {
     return false
   }
 
-  openUrl() {}
+  openUrl(url: string) {
+    this.openedUrls.push(url)
+  }
 }
 
 class InteractiveIo extends CapturedIo {
   interactive = true
   selectAnswer: string | null = 'global'
+  /** When set, answers are consumed in order; falls back to confirmAnswer. */
+  confirmAnswers: boolean[] | null = null
   confirmAnswer = true
   prompts: string[] = []
   notes: { message: string; title?: string }[] = []
@@ -70,6 +75,9 @@ class InteractiveIo extends CapturedIo {
 
   override async confirm(question: string) {
     this.prompts.push(question)
+    if (this.confirmAnswers !== null && this.confirmAnswers.length > 0) {
+      return this.confirmAnswers.shift()!
+    }
     return this.confirmAnswer
   }
 
@@ -1384,6 +1392,12 @@ describe('init', () => {
       health: async () => true,
       capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
       listDevices: async () => ({ devices: [] }),
+      accessStatus: async () => ({
+        status: 'active',
+        reason: 'alpha_grant',
+        expires_at: null,
+        email: 'alpha@example.com',
+      }),
     } as unknown as ApiClient
     const deps = {
       ...makeDeps(io, client),
@@ -1394,8 +1408,9 @@ describe('init', () => {
     expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.failed)
     const out = io.outLines.join('\n')
     expect(out).toContain('Next: Your devices')
-    expect(out).toContain('private TestFlight invitation on iPhone or Mac')
-    expect(out).toContain('open your Notifai TestFlight invitation on that device')
+    expect(out).toContain('https://test.notifai.invalid/support')
+    expect(out).toContain('sign in with the same email as this account (alpha@example.com)')
+    expect(out).toContain('install Notifai on iPhone or Mac via https://test.notifai.invalid/support')
     expect(out.match(/^Next:/gm)).toHaveLength(1)
   })
 
@@ -1436,6 +1451,12 @@ describe('init', () => {
       health: async () => true,
       capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
       listDevices: async () => ({ devices: deviceReady ? [readyIphone] : [] }),
+      accessStatus: async () => ({
+        status: 'active',
+        reason: 'alpha_grant',
+        expires_at: null,
+        email: 'alpha@example.com',
+      }),
       submit: async (draft: SubmitNotificationRequestT) => {
         submitCalls += 1
         submittedDraft = draft
@@ -1460,7 +1481,12 @@ describe('init', () => {
     }
 
     expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.ok)
-    expect(io.prompts).toEqual(['Wait here while you finish that on your device?'])
+    expect(io.prompts).toEqual([
+      'Open install instructions in your browser?',
+      'Wait here while you finish that on your device?',
+    ])
+    expect(io.openedUrls).toEqual(['https://test.notifai.invalid/support'])
+    expect(io.notes.some((n) => n.message.includes('I will wait up to 10 minutes'))).toBe(true)
     expect(io.spinnerEvents).toContain('stop:iPhone is ready to receive')
     expect(io.spinnerEvents).toContain('stop:Receipt observed from iPhone')
     expect(io.outLines.join('\n')).toContain('Companion Receipt observed from iPhone')
@@ -1471,10 +1497,94 @@ describe('init', () => {
 
     io.outLines = []
     io.prompts = []
+    io.openedUrls = []
     expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.ok)
     expect(submitCalls).toBe(1)
     expect(io.prompts).toEqual([])
     expect(io.outLines.join('\n')).toContain('All set.')
+  })
+
+  it('says the wait timer expired and can keep waiting for a late device', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-device-keep-waiting-'))
+    const io = new InteractiveIo()
+    // Open browser, wait yes, keep-waiting yes on first expiry.
+    io.confirmAnswers = [true, true, true]
+    let now = 0
+    // Match DEVICE_BRIDGE_TIMEOUT_MS (10 minutes): device appears only after
+    // the first budget has fully elapsed and keep-waiting has restarted.
+    const firstBudgetMs = 10 * 60 * 1000
+    const client = {
+      health: async () => true,
+      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+      listDevices: async () => ({
+        devices: now >= firstBudgetMs ? [readyIphone] : [],
+      }),
+      accessStatus: async () => ({
+        status: 'active',
+        reason: 'alpha_grant',
+        expires_at: null,
+        email: 'late@example.com',
+      }),
+      submit: async () => setupReceipt(),
+      evidence: async (requestId: string) =>
+        setupEvidence(requestId, {
+          state: 'observed',
+          observed_at: '2026-08-05T18:00:02.000Z',
+          latency_ms: 1_000,
+        }),
+    } as unknown as ApiClient
+    const deps: CommandDeps = {
+      ...makeDeps(io, client),
+      cwd,
+      env: { XDG_CONFIG_HOME: path.join(cwd, 'config'), XDG_STATE_HOME: path.join(cwd, 'state') },
+      now: () => now,
+      sleep: async (milliseconds) => {
+        now += milliseconds
+      },
+    }
+
+    expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.ok)
+    expect(io.errLines.join('\n')).toContain('wait timer expired')
+    expect(io.errLines.join('\n')).toMatch(/setup is not finished, only this wait/)
+    expect(io.prompts.some((q) => q.includes('Keep waiting'))).toBe(true)
+    expect(io.spinnerEvents).toContain('stop:iPhone is ready to receive')
+    expect(io.outLines.join('\n')).toContain('All set.')
+  })
+
+  it('never hangs an agent on the device wait or keep-waiting prompt', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-device-agent-'))
+    const io = new (class extends CapturedIo {
+      override async confirm(): Promise<boolean> {
+        throw new Error('an unattended init reached a device-wait prompt')
+      }
+
+      override openUrl(): void {
+        throw new Error('an unattended init opened a browser')
+      }
+    })()
+    const client = {
+      health: async () => true,
+      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+      listDevices: async () => ({ devices: [] }),
+      accessStatus: async () => ({
+        status: 'active',
+        reason: 'alpha_grant',
+        expires_at: null,
+        email: 'agent@example.com',
+      }),
+    } as unknown as ApiClient
+    const deps = {
+      ...makeDeps(io, client),
+      cwd,
+      env: { XDG_CONFIG_HOME: path.join(cwd, 'config'), XDG_STATE_HOME: path.join(cwd, 'state') },
+    }
+
+    expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.failed)
+    const out = io.outLines.join('\n')
+    expect(out).toContain('Next: Your devices')
+    expect(out).toContain('https://test.notifai.invalid/support')
+    expect(out).toContain('sign in with the same email as this account (agent@example.com)')
+    expect(io.openedUrls).toEqual([])
   })
 
   it('persists a partial proof and checks the same request instead of sending again', async () => {
