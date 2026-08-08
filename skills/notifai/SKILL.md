@@ -185,8 +185,10 @@ answer=$(notifai send \
   by continuing with the default you stated, and say plainly which assumption
   you took. Do not re-notify to nag.
 - `notifai replies <request_id>` retrieves an answer that arrived after you
-  stopped waiting. Reaching for it means holding a request id across turns,
-  so prefer `notifai ask`, which hands the answer back without one.
+  stopped waiting. For a hook-routed question, `notifai replies --pending`
+  resolves the current session's request id, so recovery never depends on a
+  transcript note. Prefer `notifai ask`, which normally hands the answer back
+  automatically.
 - Both companions can answer. The one difference: on iOS a closed question's
   choices are buttons on the banner itself, and on macOS they are buttons in
   the app, with the banner offering free text. The answer reaches you the same
@@ -233,24 +235,24 @@ would. Then:
   (default 300, counted from when you ran `ask`) and only then goes to their
   devices. If they come back mid-wait it is abandoned and nothing is sent.
   On Claude Code, Codex, and Cursor, their answer resumes your turn as if they
-  had typed it. The OpenCode adapter routes `session.idle` into the same question
-  hook, but OpenCode exposes no reliable way for that event to re-enter an idle
-  agent loop with the answer; use the blocking `--reply` form there when the
-  answer must reach the agent.
+  had typed it. OpenCode pushes without holding its idle event open; its next
+  user prompt polls for the answer and adds it to the agent context. Use the
+  blocking `--reply` form there only when the answer must reach the agent before
+  another user prompt.
 - **Pushed but not answered in time** — the hook stops waiting after
   `hook_reply_timeout_seconds` (default 180), but the question stays
   answerable on their devices for up to an hour. On Claude Code, Codex, and
-  Cursor, if your next turn starts without an answer in it, check the hook's
-  transcript note for the request id and run `notifai replies <request_id>`
-  before re-asking — the answer may already be there. Never register the same
+  Cursor, if your next turn starts without an answer in it, run
+  `notifai replies --pending` before re-asking — the answer may already be
+  there. Never register the same
   question again while the first is still live; that is nagging, and
   superseding it discards the answer window the user may be mid-way through
   using.
 
 On harnesses with answer continuation this avoids a wasted wait when the user is
 present and a dead session when they are not. Use the blocking `--reply` form
-when hooks are not installed, on OpenCode, or when you need the answer mid-turn
-rather than at its end.
+when hooks are not installed or when you need the answer mid-turn rather than
+at its end.
 
 Answering from a companion device does not mark the user as present — only local
 keyboard or mouse activity does. A remote answer is evidence of reachability,
@@ -297,7 +299,9 @@ change — never in reaction to a timeout or an unanswered question.
 ### Verifying delivery
 
 `notifai send` waits briefly and prints a receipt; use `--json` for machine
-parsing and `notifai status <request_id>` for the full evidence trail. A receipt
+parsing and `notifai status <request_id>` for the full evidence trail. With
+`--reply --json`, stdout is NDJSON: a `receipt` record is emitted before the
+reply wait and a `reply_result` record follows when the wait ends. A receipt
 whose `overall` value is `provider_rejected_all` makes `send` exit 1. Other
 pre-receipt failures can also be nonzero, so branch on the structured result or
 the diagnostic rather than treating every exit 1 as the same failure.
@@ -391,14 +395,15 @@ worktree rather than assuming one install activates all of them.
 On OpenCode the adapter is a generated plugin file rather than an entry in a
 settings document. Notifai owns that whole file: install refuses to overwrite a
 plugin it did not write, and uninstall removes only its own. The same restart
-rule applies — OpenCode loads plugins once at start. Its current `session.idle`
-event is wired to question routing but has no reliable Stop-style continuation,
-so a device answer does not automatically resume the agent; use `send --reply`
-for a decision that must return.
+rule applies — OpenCode loads plugins once at start. Its `session.idle` event
+pushes without waiting, and the next user prompt collects a device answer into
+the agent context. It cannot automatically resume the idle turn, so use
+`send --reply` only for a decision that must return before another prompt.
 
 On Cursor the adapter uses the native flat hook schema. A companion-device
 answer becomes one native `followup_message`, and the installed stop hook sets
-`loop_limit = 1` so an answer cannot turn into repeated automatic turns. Do not
+`loop_limit = 3` so chained questions are bounded rather than lost or repeated
+without limit. Do not
 claim another harness is supported unless it appears in
 `notifai hooks install --help`.
 

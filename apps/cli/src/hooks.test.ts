@@ -438,6 +438,142 @@ describe('nagging guards', () => {
     expect(h.recorder.submitted).toEqual([])
     expect(h.io.outLines).toEqual([])
   })
+
+  it('delivers a new question registered during an answer continuation', async () => {
+    const h = harness([reply({ text: 'First answer' })], 900)
+    writeSessionState('n3', h.env, { last_prompt_at: AWAY })
+    registerQuestion('n3', h.env, { question: 'First question?' }, NOW)
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'n3' }))
+    await h.deps.sleep?.(1)
+    registerQuestion('n3', h.env, { question: 'Follow-up question?' }, (h.deps.now?.() ?? NOW))
+    h.io.outLines = []
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'n3', stop_hook_active: true }))
+
+    const questions = h.recorder.submitted.filter((entry) => entry.draft.event === 'agent_question')
+    expect(questions.map((entry) => entry.draft.presentation.body)).toEqual([
+      'First question?',
+      'Follow-up question?',
+    ])
+    expect(h.io.outLines.join('\n')).toContain('First answer')
+  })
+
+  it('stops chained questions at the consecutive continuation cap', async () => {
+    const h = harness([], 900)
+    writeSessionState('n4', h.env, {
+      last_prompt_at: AWAY,
+      continuation: { answered_at: NOW - 1, count: 3 },
+    })
+    registerQuestion('n4', h.env, { question: 'One more?' }, NOW)
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'n4', stop_hook_active: true }))
+
+    expect(h.recorder.submitted).toEqual([])
+    expect(readSessionState('n4', h.env).pending?.question).toBe('One more?')
+    expect(h.io.errLines.join('\n')).toContain('continuation limit (3) reached')
+  })
+})
+
+describe('late answer collection', () => {
+  it('collects a late answer on Stop and resumes with it instead of asking twice', async () => {
+    const answers: ReplyView[] = []
+    const h = harness(answers, 900)
+    writeSessionState('late-stop', h.env, { last_prompt_at: AWAY })
+    registerQuestion('late-stop', h.env, { question: 'Ship it?' }, NOW)
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'late-stop' }))
+    expect(readSessionState('late-stop', h.env).pending?.request_id).toBe('req_hook_1')
+    answers.push(reply({ text: 'Ship it' }))
+    h.io.outLines = []
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'late-stop' }))
+
+    expect(h.recorder.submitted.filter((entry) => entry.draft.event === 'agent_question')).toHaveLength(1)
+    expect(h.recorder.closed).toContain('req_hook_1')
+    expect(readSessionState('late-stop', h.env).pending).toBeUndefined()
+    expect(h.io.outLines).toHaveLength(1)
+    expect(JSON.parse(h.io.outLines[0] ?? '{}')).toMatchObject({
+      decision: 'block',
+      reason: expect.stringContaining('Ship it'),
+    })
+  })
+
+  it('collects a late answer on UserPromptSubmit and retires it truthfully', async () => {
+    const answers: ReplyView[] = []
+    const h = harness(answers, 900)
+    writeSessionState('late-prompt', h.env, { last_prompt_at: AWAY })
+    registerQuestion('late-prompt', h.env, { question: 'Ship it?' }, NOW)
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'late-prompt' }))
+    answers.push(reply({ text: 'Hold' }))
+    h.io.outLines = []
+
+    await hookRunCommand(
+      h.deps,
+      'user-prompt-submit',
+      stdin({ session_id: 'late-prompt', cwd: h.deps.cwd }),
+    )
+
+    const retirement = h.recorder.submitted.find(
+      (entry) => entry.draft.event === 'question_retired',
+    )?.draft
+    expect(retirement?.lifecycle).toMatchObject({
+      state: 'answered',
+      retires_request_id: 'req_hook_1',
+    })
+    expect(retirement?.lifecycle?.state).not.toBe('answered_elsewhere')
+    expect(readSessionState('late-prompt', h.env).pending).toBeUndefined()
+    expect(JSON.parse(h.io.outLines[0] ?? '{}')).toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'UserPromptSubmit',
+        additionalContext: expect.stringContaining('Hold'),
+      },
+    })
+  })
+})
+
+describe('OpenCode answer preservation', () => {
+  it('pushes without waiting and leaves the answerable request intact', async () => {
+    const h = harness([reply({ text: 'Approve' })], 900)
+    writeSessionState('open1', h.env, { last_prompt_at: AWAY })
+    registerQuestion('open1', h.env, { question: 'Deploy?' }, NOW)
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'open1' }), 'opencode')
+
+    expect(h.recorder.submitted.filter((entry) => entry.draft.event === 'agent_question')).toHaveLength(1)
+    expect(h.recorder.closed).toEqual([])
+    expect(
+      h.recorder.submitted.filter((entry) => entry.draft.event === 'question_retired'),
+    ).toEqual([])
+    expect(readSessionState('open1', h.env).pending).toMatchObject({
+      question: 'Deploy?',
+      request_id: 'req_hook_1',
+      device_ids: ['dev_iphone', 'dev_mac'],
+    })
+    expect(h.io.outLines).toEqual([])
+  })
+})
+
+describe('reply-wait presence monitoring', () => {
+  it('returns the terminal when the user comes back after the push', async () => {
+    const h = harness([], 900)
+    let checks = 0
+    h.deps.idleSeconds = () => {
+      checks += 1
+      return checks >= 4 ? 1 : 900
+    }
+    writeSessionState('returned', h.env, { last_prompt_at: AWAY })
+    registerQuestion('returned', h.env, { question: 'Deploy?' }, NOW - 300_000)
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'returned' }))
+
+    expect(h.recorder.submitted.filter((entry) => entry.draft.event === 'agent_question')).toHaveLength(1)
+    expect(h.recorder.closed).toEqual([])
+    expect(readSessionState('returned', h.env).pending?.request_id).toBe('req_hook_1')
+    expect((h.deps.now?.() ?? NOW) - NOW).toBeLessThan(30_000)
+    expect(h.io.errLines.join('\n')).toContain('came back')
+    expect(h.io.errLines.join('\n')).toContain('notifai replies --pending')
+  })
 })
 
 describe('Cursor stop output', () => {

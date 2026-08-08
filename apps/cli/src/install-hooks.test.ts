@@ -450,6 +450,7 @@ describe('the OpenCode adapter', () => {
   it('shells out to the same hook commands the other harnesses run', () => {
     // The whole point: presence, escalation and retirement stay in the CLI.
     expect(source).toContain('"hook", event')
+    expect(source).toContain('"--harness", "opencode"')
     expect(source).toContain(JSON.stringify(SCRIPT))
     expect(source).toContain(JSON.stringify(EXEC))
   })
@@ -462,6 +463,11 @@ describe('the OpenCode adapter', () => {
     expect(source).toContain('event?.type === "session.deleted"')
     expect(source).toContain('event?.properties?.info?.id')
     expect(source).not.toContain('"permission.ask"')
+  })
+
+  it('injects collected late answers into the next OpenCode user message', () => {
+    expect(source).toContain('hookSpecificOutput?.additionalContext')
+    expect(source).toContain('synthetic: true')
   })
 
   it('carries the ownership marker so a second checkout replaces it', () => {

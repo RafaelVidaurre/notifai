@@ -205,9 +205,9 @@ export function buildCursorHookConfig(options: BuildOptions): CursorHookConfig {
       {
         command: hookCommand(options.execPath, options.scriptPath, 'stop', 'cursor'),
         timeout: blockingTimeout,
-        // One companion-device answer produces one automatic follow-up turn. There is no
-        // useful reason for Cursor to repeat it, even if state cleanup fails.
-        loop_limit: 1,
+        // A continuation may register a real follow-up question. Match the
+        // session-state cap so those chains are useful but never unbounded.
+        loop_limit: 3,
       },
     ],
     sessionEnd: [

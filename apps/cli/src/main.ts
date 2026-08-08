@@ -26,6 +26,7 @@ import {
   type CommandDeps,
 } from './commands.js'
 import { defaultCredentialStore } from './credentials.js'
+import { HARNESSES } from './install-hooks.js'
 import type { Platform } from '@raidiant/notifai-protocol'
 import { nativeSkills, type SkillScope } from './native-skills.js'
 
@@ -194,7 +195,7 @@ program
   .option('--image <path|url|media_id>', 'upload or attach an image')
   .option('--reply', 'enable the inline reply action and block for the answer')
   .option('--reply-timeout <seconds>', 'how long to wait for a reply (default: 900)', (v: string) => Number(v))
-  .option('--reply-window <seconds>', 'how long the server accepts a reply (default: 86400)', (v: string) => Number(v))
+  .option('--reply-window <seconds>', 'how long the server accepts a reply (default: 3600)', (v: string) => Number(v))
   .option(
     '--reply-choice <label>',
     'with --reply, ask a closed question (2-6 answers); one value splits on commas, or repeat the flag',
@@ -242,12 +243,13 @@ program
   })
 
 program
-  .command('replies <request_id>')
+  .command('replies [request_id]')
   .description('Retrieve replies for a notification request')
+  .option('--pending', 'use the pushed question pending for this project session')
   .option('--wait <seconds>', 'how long to wait for a reply', (v: string) => Number(v))
   .option('--after <seq>', 'return replies after this sequence number', (v: string) => Number(v))
   .option('--json', 'machine-readable output')
-  .action(async (requestId: string, opts: { wait?: number; after?: number; json?: boolean }) => {
+  .action(async (requestId: string | undefined, opts: { wait?: number; after?: number; json?: boolean; pending?: boolean }) => {
     process.exit(await repliesCommand(deps, requestId, opts))
   })
 
@@ -293,8 +295,9 @@ program
   .option('--owner <name>', 'internal ownership marker')
   .option('--harness <name>', 'internal harness output adapter')
   .action(async (event: string, opts: { harness?: string }) => {
+    const harness = HARNESSES.find((candidate) => candidate === opts.harness)
     process.exit(
-      await hookRunCommand(deps, event, readStdin, opts.harness === 'cursor' ? 'cursor' : undefined),
+      await hookRunCommand(deps, event, readStdin, harness),
     )
   })
 
@@ -304,7 +307,7 @@ hooks
   .description('Wire this harness to route registered questions to your devices')
   .option(
     '--harness <name>',
-    'claude-code | codex | cursor | opencode (default: detected; OpenCode cannot resume an idle turn from an answer)',
+    'claude-code | codex | cursor | opencode (default: detected; OpenCode delivers answers on the next prompt)',
   )
   .option('--global', 'install for every project instead of just this one')
   .action((opts: { harness?: string; global?: boolean }) => {

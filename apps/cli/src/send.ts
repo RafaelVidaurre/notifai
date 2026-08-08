@@ -161,7 +161,7 @@ export function buildDraft(config: CliConfig, flags: SendFlags): DraftBuild {
     ...(flags.reply
       ? {
           reply: {
-            expires_in_seconds: flags.replyWindow ?? 86400,
+            expires_in_seconds: flags.replyWindow ?? 3600,
             ...(choices !== null ? { kind: 'choice' as const, choices } : {}),
           },
         }

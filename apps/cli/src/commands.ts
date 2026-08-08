@@ -47,9 +47,11 @@ import {
   parseHookInput,
   pruneAbandonedSessions,
   readProjectSession,
+  readSessionState,
   registerQuestion,
   type HookContext,
   type HookEnvelope,
+  type HookHarness,
 } from './hooks.js'
 import { readIdleSeconds } from './idle.js'
 import {
@@ -511,11 +513,21 @@ export async function sendCommand(
     )
     const receiptExit = receiptExitCode(receipt)
     if (!flags.json) deps.io.out(formatReceipt(receipt))
+    else if (flags.reply) deps.io.out(JSON.stringify({ type: 'receipt', receipt }))
 
     // A zero wait can no longer reach here: --reply guarantees a positive one.
     if (!flags.reply || receiptExit !== EXIT.ok) {
       if (flags.json) {
-        deps.io.out(JSON.stringify(flags.reply ? { receipt, replies: [] } : receipt, null, 2))
+        deps.io.out(
+          flags.reply
+            ? JSON.stringify({
+                type: 'reply_result',
+                request_id: receipt.request_id,
+                replies: [],
+                degraded: false,
+              })
+            : JSON.stringify(receipt, null, 2),
+        )
       }
       return receiptExit
     }
@@ -528,17 +540,24 @@ export async function sendCommand(
     })
     if (flags.json) {
       deps.io.out(
-        JSON.stringify(
-          { receipt, replies: result.response.replies, degraded: result.degraded },
-          null,
-          2,
-        ),
+        JSON.stringify({
+          type: 'reply_result',
+          request_id: receipt.request_id,
+          replies: result.response.replies,
+          degraded: result.degraded,
+        }),
       )
     } else if (result.response.replies.length > 0) printReplies(deps, result.response.replies)
     else printNoReply(deps, receipt.request_id, result.response.reply_expires_at)
     if (result.degraded) {
       deps.io.err(DEGRADED_WAIT_WARNING)
       return EXIT.network
+    }
+    if (result.timedOut) {
+      deps.io.err(
+        `No reply yet. Retrieve it with \`notifai replies ${receipt.request_id}\` or retire the question with ` +
+          `\`notifai close ${receipt.request_id}\`.`,
+      )
     }
     return result.timedOut ? EXIT.noReply : EXIT.ok
   } catch (err) {
@@ -548,8 +567,8 @@ export async function sendCommand(
 
 export async function repliesCommand(
   deps: CommandDeps,
-  requestId: string,
-  flags: { wait?: number; after?: number; json?: boolean },
+  requestedId: string | undefined,
+  flags: { wait?: number; after?: number; json?: boolean; pending?: boolean },
 ): Promise<number> {
   const waitSeconds = flags.wait ?? 0
   const afterSeq = flags.after ?? 0
@@ -559,6 +578,28 @@ export async function repliesCommand(
   }
   if (!isNonNegativeInteger(afterSeq)) {
     deps.io.err('--after must be a non-negative integer sequence number.')
+    return EXIT.usage
+  }
+
+  if (flags.pending === true && requestedId !== undefined) {
+    deps.io.err('Pass a request id or --pending, not both.')
+    return EXIT.usage
+  }
+  let requestId = requestedId
+  if (flags.pending === true) {
+    const sessionId = readProjectSession(deps.cwd, deps.env, (deps.now ?? Date.now)())
+    if (sessionId === null) {
+      deps.io.err('No active session pointer is available in this directory.')
+      return EXIT.noReply
+    }
+    requestId = readSessionState(sessionId, deps.env).pending?.request_id
+    if (requestId === undefined) {
+      deps.io.err(`Session ${sessionId} has no pushed question pending.`)
+      return EXIT.noReply
+    }
+  }
+  if (requestId === undefined) {
+    deps.io.err('Pass a request id or --pending.')
     return EXIT.usage
   }
 
@@ -574,7 +615,10 @@ export async function repliesCommand(
     })
     if (flags.json) {
       deps.io.out(JSON.stringify({ ...result.response, degraded: result.degraded }, null, 2))
-    } else if (result.response.replies.length > 0) printReplies(deps, result.response.replies)
+    } else if (result.response.replies.length > 0) {
+      if (flags.pending === true) deps.io.out(`pending request ${requestId}`)
+      printReplies(deps, result.response.replies)
+    }
     else printNoReply(deps, requestId, result.response.reply_expires_at)
     if (result.degraded) {
       deps.io.err(DEGRADED_WAIT_WARNING)
@@ -831,7 +875,7 @@ export async function hookRunCommand(
   deps: CommandDeps,
   event: string,
   readStdin: () => Promise<string>,
-  harness?: 'cursor',
+  harness?: HookHarness,
 ): Promise<number> {
   if (!(HOOK_EVENTS as readonly string[]).includes(event)) {
     deps.io.err(`Unknown hook event "${event}". Valid: ${HOOK_EVENTS.join(', ')}`)
@@ -913,6 +957,7 @@ export async function hookRunCommand(
           degraded: result.degraded,
         }
       },
+      ...(harness === undefined ? {} : { harness }),
     }
 
     // Real clock, deliberately, not `deps.now`. This compares against file
@@ -1182,7 +1227,7 @@ function hookActivationAdvice(installations: Installation[]): string {
   }
   if (harnesses.has('opencode')) {
     advice.push(
-      'OpenCode: restart it, then send one prompt; plugins load at startup, and decisions that must resume the agent should use `notifai send --reply`',
+      'OpenCode: restart it, then send one prompt; plugins load at startup, and a device answer is delivered on the next prompt',
     )
   }
   return `${advice.join('. ')}.`
@@ -1265,8 +1310,8 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
       deps.io.out('Send one Cursor prompt, then check `notifai doctor`. If the hook has not fired,')
       deps.io.out('start a new Cursor session and try one prompt again.')
     }
-    deps.io.out('A companion-device answer is submitted as one')
-    deps.io.out('follow-up user message; loop_limit = 1 prevents repeated answer turns.')
+    deps.io.out('A companion-device answer is submitted as one follow-up user message.')
+    deps.io.out('loop_limit = 3 permits bounded chained questions without an unbounded loop.')
     return EXIT.ok
   }
 
@@ -1377,8 +1422,9 @@ function installOpencodePlugin(
   deps.io.out('It maps chat.message to presence, session.idle to question escalation, and')
   deps.io.out('session.deleted to local cleanup through the same `notifai hook` commands')
   deps.io.out('the other harnesses run. Permission prompts stay in OpenCode.')
-  deps.io.out('OpenCode cannot reliably resume an idle agent turn with a device answer; use')
-  deps.io.out('`notifai send --reply` when the answer must return to the agent.')
+  deps.io.out('OpenCode pushes without holding its idle event open; the next user prompt')
+  deps.io.out('collects a device answer and adds it to the agent context. Use `notifai')
+  deps.io.out('send --reply` only when the answer must return before another prompt.')
   deps.io.out('')
   deps.io.out('Restart OpenCode: it loads plugins once at start.')
   return EXIT.ok
@@ -2947,7 +2993,7 @@ function hookChecks(deps: CommandDeps): { name: string; ok: boolean; detail: str
       name: 'hooks (opencode continuation)',
       ok: false,
       detail:
-        'question routing is installed, but OpenCode cannot reliably resume an idle agent turn with the answer; use `notifai send --reply` for decisions',
+        'question routing is installed; OpenCode cannot resume an idle turn automatically, but its next user prompt collects the answer',
     })
   }
 

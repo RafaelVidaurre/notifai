@@ -35,7 +35,7 @@ import {
   type CommandSpinner,
 } from './commands.js'
 import { applyPlan, buildHookConfig } from './install-hooks.js'
-import { writeProjectSession } from './hooks.js'
+import { writeProjectSession, writeSessionState } from './hooks.js'
 import type { NativeSkill, NativeSkills, SkillScope } from './native-skills.js'
 
 class CapturedIo implements CommandIo {
@@ -459,12 +459,13 @@ describe('command contracts', () => {
     expect(sleeps).toEqual([250])
   })
 
-  it('returns exit 3 with one JSON object when no reply arrives before the timeout', async () => {
+  it('prints an NDJSON receipt before waiting and a result record on exit 3', async () => {
     const io = new CapturedIo()
     let now = 0
     const client = {
       submit: async () => receipt,
       replies: async (_requestId: string, options: { waitSeconds: number }) => {
+        expect(JSON.parse(io.outLines[0] ?? '{}')).toEqual({ type: 'receipt', receipt })
         now += options.waitSeconds * 1_000
         return replyResponse()
       },
@@ -480,13 +481,20 @@ describe('command contracts', () => {
         json: true,
       }),
     ).toBe(EXIT.noReply)
-    expect(io.outLines).toHaveLength(1)
+    expect(io.outLines).toHaveLength(2)
     // `degraded` is part of the shape on every reply wait, not only when it is
     // true: an agent must be able to read it without knowing it might be absent.
-    expect(JSON.parse(io.outLines[0] ?? '{}')).toEqual({ receipt, replies: [], degraded: false })
+    expect(JSON.parse(io.outLines[1] ?? '{}')).toEqual({
+      type: 'reply_result',
+      request_id: receipt.request_id,
+      replies: [],
+      degraded: false,
+    })
+    expect(io.errLines.join('\n')).toContain(`notifai replies ${receipt.request_id}`)
+    expect(io.errLines.join('\n')).toContain(`notifai close ${receipt.request_id}`)
   })
 
-  it('prints the stable send JSON shape when a reply is received', async () => {
+  it('prints the receipt and reply result as two NDJSON records when answered', async () => {
     const io = new CapturedIo()
     const client = {
       submit: async () => receipt,
@@ -502,9 +510,11 @@ describe('command contracts', () => {
         json: true,
       }),
     ).toBe(EXIT.ok)
-    expect(io.outLines).toHaveLength(1)
-    expect(JSON.parse(io.outLines[0] ?? '{}')).toEqual({
-      receipt,
+    expect(io.outLines).toHaveLength(2)
+    expect(JSON.parse(io.outLines[0] ?? '{}')).toEqual({ type: 'receipt', receipt })
+    expect(JSON.parse(io.outLines[1] ?? '{}')).toEqual({
+      type: 'reply_result',
+      request_id: receipt.request_id,
       replies: [reply],
       degraded: false,
     })
@@ -523,6 +533,30 @@ describe('command contracts', () => {
     expect(await repliesCommand(makeDeps(io, client), receipt.request_id, { after: 7 })).toBe(EXIT.ok)
     expect(requested).toEqual({ waitSeconds: 0, afterSeq: 7 })
     expect(io.outLines).toEqual(['reply from iPhone: yes, after the migration'])
+  })
+
+  it('resolves replies --pending through the project session pointer and prints its id', async () => {
+    const io = new CapturedIo()
+    const client = {
+      replies: async () => replyResponse([reply]),
+    } as unknown as ApiClient
+    const deps = makeDeps(io, client)
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-pending-replies-'))
+    deps.cwd = root
+    deps.env = {
+      XDG_CONFIG_HOME: path.join(root, 'config'),
+      XDG_STATE_HOME: path.join(root, 'state'),
+    }
+    writeProjectSession(root, deps.env, 'pending-session', Date.now())
+    writeSessionState('pending-session', deps.env, {
+      pending: { question: 'Deploy?', request_id: receipt.request_id },
+    })
+
+    expect(await repliesCommand(deps, undefined, { pending: true })).toBe(EXIT.ok)
+    expect(io.outLines).toEqual([
+      `pending request ${receipt.request_id}`,
+      'reply from iPhone: yes, after the migration',
+    ])
   })
 })
 
@@ -604,7 +638,7 @@ describe('Cursor hook commands', () => {
   const execPath = '/usr/local/bin/node'
   const scriptPath = '/opt/notifai/dist/main.js'
 
-  it('installs native Cursor hooks with a single bounded answer continuation', () => {
+  it('installs native Cursor hooks with bounded chained answer continuations', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-cursor-install-'))
     const io = new CapturedIo()
     const deps = { ...makeDeps(io, {} as ApiClient), cwd }
@@ -630,7 +664,7 @@ describe('Cursor hook commands', () => {
     )
     expect(installed.hooks['stop']?.[0]).toMatchObject({
       command: expect.stringContaining('hook stop --owner notifai --harness cursor'),
-      loop_limit: 1,
+      loop_limit: 3,
     })
   })
 
@@ -742,7 +776,7 @@ describe('harness activation guidance', () => {
     )
 
     expect(io.outLines.join('\n')).toContain('Permission prompts stay in OpenCode.')
-    expect(io.outLines.join('\n')).toContain('cannot reliably resume an idle agent turn')
+    expect(io.outLines.join('\n')).toContain('next user prompt')
     const pluginFile = path.join(cwd, '.opencode', 'plugins', 'notifai.js')
     const plugin = readFileSync(pluginFile, 'utf8')
     expect(plugin).toContain('const TIMEOUT_MS = 540000')
@@ -1926,7 +1960,7 @@ describe('an outage is not an answer', () => {
       json: true,
     })
 
-    const payload = JSON.parse(io.outLines[0] ?? '{}') as { degraded: boolean }
+    const payload = JSON.parse(io.outLines[1] ?? '{}') as { degraded: boolean }
     expect(payload.degraded).toBe(true)
   })
 
@@ -2123,7 +2157,7 @@ describe('asking before the hooks have ever run', () => {
     expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
     const said = io.errLines.join(' ')
     expect(said).toMatch(/OpenCode: restart it, then send one prompt/)
-    expect(said).toContain('notifai send --reply')
+    expect(said).toContain('device answer is delivered on the next prompt')
   })
 
   it('says to install when nothing is installed at all', () => {

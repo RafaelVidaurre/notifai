@@ -16,11 +16,11 @@ import { buildDraft } from './send.js'
 /**
  * Harness hook handlers.
  *
- * Claude Code, Codex and OpenCode all expose the same three joints: a blocking
- * pre-approval hook that returns a decision, a turn-end hook, and a hook that
- * fires when the user submits a prompt. That is enough to answer a blocked
- * agent from the phone without the agent cooperating at all — no question
- * detection, no pending state in a context window that compaction will eat.
+ * The supported harnesses expose the same useful lifecycle joints: a turn-end
+ * event and an event that fires when the user submits a prompt. Claude Code,
+ * Codex, and Cursor can continue directly from a turn-end answer. OpenCode
+ * preserves the pending answer at turn end and injects it on the next prompt.
+ * No question detection or context-window state is needed in either path.
  *
  * The load-bearing constraint is that these hooks are synchronous: while one
  * blocks, the harness cannot show its own prompt either. So a hook may only
@@ -61,6 +61,11 @@ export interface SessionState {
    * attempt costs nothing and a missed one costs a stale notification for ever.
    */
   retiring?: RetiringQuestion[]
+  /** Tracks bounded Stop continuations so a follow-up ask is delivered once. */
+  continuation?: {
+    answered_at: number
+    count: number
+  }
 }
 
 /** A delivered question awaiting its retirement push. */
@@ -455,7 +460,11 @@ export interface HookContext {
     requestId: string,
     timeoutSeconds: number,
   ) => Promise<{ replies: ReplyView[]; timedOut: boolean; degraded?: boolean }>
+  /** OpenCode cannot consume Stop stdout, so its adapter must never wait there. */
+  harness?: HookHarness
 }
+
+export type HookHarness = 'claude-code' | 'codex' | 'cursor' | 'opencode'
 
 interface AskResult {
   requestId: string
@@ -465,7 +474,14 @@ interface AskResult {
   devices: string[]
   /** The wait ended amid network failures, so "no answer" is unproven. */
   degraded: boolean
+  /** False when the harness cannot consume a Stop answer and polling was skipped. */
+  waited: boolean
+  /** The user returned to this machine after the question was pushed. */
+  userReturned: boolean
 }
+
+/** Re-check local presence at this cadence while a pushed question is waiting. */
+const REPLY_PRESENCE_POLL_SECONDS = 5
 
 /**
  * Push a question and block for the answer.
@@ -526,14 +542,62 @@ async function askAndWait(
     collapseKey,
     devices: answerable,
   })
-  const result = await ctx.waitForFirstReply(receipt.request_id, timeoutSeconds)
+  if (ctx.harness === 'opencode') {
+    return {
+      requestId: receipt.request_id,
+      collapseKey,
+      reply: null,
+      devices: answerable,
+      degraded: false,
+      waited: false,
+      userReturned: false,
+    }
+  }
+
+  const result = await waitForReplyWhileAway(ctx, receipt.request_id, timeoutSeconds)
   if (result.replies.length > 0) await closeQuietly(ctx, receipt.request_id)
   return {
     requestId: receipt.request_id,
     collapseKey,
     reply: result.replies[0] ?? null,
     devices: answerable,
-    degraded: result.degraded === true,
+    degraded: result.degraded,
+    waited: true,
+    userReturned: result.userReturned,
+  }
+}
+
+async function waitForReplyWhileAway(
+  ctx: HookContext,
+  requestId: string,
+  timeoutSeconds: number,
+): Promise<{ replies: ReplyView[]; degraded: boolean; userReturned: boolean }> {
+  const deadline = ctx.now() + timeoutSeconds * 1000
+  let degraded = false
+  let firstPoll = true
+
+  for (;;) {
+    if (ctx.config.require_idle.value) {
+      const idle = ctx.idleSeconds()
+      if (idle !== null && idle < ctx.config.away_after_seconds.value) {
+        return { replies: [], degraded, userReturned: true }
+      }
+    }
+
+    const remainingMs = Math.max(0, deadline - ctx.now())
+    if (!firstPoll && remainingMs === 0) {
+      return { replies: [], degraded, userReturned: false }
+    }
+    firstPoll = false
+    const pollSeconds = Math.min(
+      REPLY_PRESENCE_POLL_SECONDS,
+      Math.max(0, Math.ceil(remainingMs / 1000)),
+    )
+    const result = await ctx.waitForFirstReply(requestId, pollSeconds)
+    degraded ||= result.degraded === true
+    if (result.replies.length > 0) {
+      return { replies: result.replies, degraded, userReturned: false }
+    }
   }
 }
 
@@ -827,6 +891,85 @@ export async function drainOrphanRetirements(
   return done
 }
 
+const LATE_STOP_POLL_SECONDS = 4
+const LATE_PROMPT_POLL_SECONDS = 3
+const MAX_CONTINUATION_COUNT = 3
+
+interface PendingPoll {
+  reply: ReplyView | null
+  degraded: boolean
+  failed: boolean
+}
+
+/** One bounded recovery poll for a question that outlived its original wait. */
+async function pollPendingReply(
+  ctx: HookContext,
+  pending: PendingQuestion,
+  timeoutSeconds: number,
+): Promise<PendingPoll> {
+  if (pending.request_id === undefined) return { reply: null, degraded: false, failed: false }
+  try {
+    const result = await ctx.waitForFirstReply(pending.request_id, timeoutSeconds)
+    return {
+      reply: result.replies[0] ?? null,
+      degraded: result.degraded === true,
+      failed: false,
+    }
+  } catch {
+    return { reply: null, degraded: true, failed: true }
+  }
+}
+
+function answerContext(reply: ReplyView): string {
+  return `Notifai — the user answered from ${reply.device_name}: "${reply.text}". Continue with that answer.`
+}
+
+function userPromptAnswerOutput(reply: ReplyView): string {
+  return JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: 'UserPromptSubmit',
+      additionalContext: answerContext(reply),
+    },
+  })
+}
+
+function stopAnswerOutput(reply: ReplyView): string {
+  return JSON.stringify({ decision: 'block', reason: answerContext(reply) })
+}
+
+/**
+ * Close, truthfully retire, and forget one answered pending question without
+ * dropping any other retirement debt. Stop answers also open one bounded
+ * continuation generation; UserPromptSubmit answers ride the user's new turn.
+ */
+async function finishPendingAnswer(
+  ctx: HookContext,
+  envelope: HookEnvelope,
+  sessionId: string,
+  pending: PendingQuestion,
+  reply: ReplyView,
+  continuation: boolean,
+): Promise<void> {
+  parkForRetirement(sessionId, ctx.env, pending, 'answered')
+  const current = readSessionState(sessionId, ctx.env)
+  const { pending: _pending, continuation: previousContinuation, ...carried } = current
+  void _pending
+
+  writeSessionState(sessionId, ctx.env, {
+    ...carried,
+    ...(continuation
+      ? {
+          continuation: {
+            answered_at: ctx.now(),
+            count:
+              (envelope.stop_hook_active === true ? previousContinuation?.count ?? 0 : 0) + 1,
+          },
+        }
+      : { last_prompt_at: ctx.now() }),
+  })
+  await drainRetirements(ctx, sessionId, ctx.env, sessionLabel(ctx, envelope))
+}
+
 // ---------------------------------------------------------------------------
 // UserPromptSubmit — the user is at the keyboard
 // ---------------------------------------------------------------------------
@@ -847,6 +990,19 @@ export async function handleUserPromptSubmit(
 
   const state = readSessionState(sessionId, ctx.env)
   const pending = state.pending
+  if (pending?.request_id !== undefined) {
+    const late = await pollPendingReply(ctx, pending, LATE_PROMPT_POLL_SECONDS)
+    if (late.reply !== null) {
+      await finishPendingAnswer(ctx, envelope, sessionId, pending, late.reply, false)
+      if (envelope.cwd !== undefined) writeProjectSession(envelope.cwd, ctx.env, sessionId, ctx.now())
+      await drainOrphanRetirements(ctx, ctx.env, ctx.now())
+      notes.push(`late answer from ${late.reply.device_name}: ${late.reply.text}`)
+      return { stdout: userPromptAnswerOutput(late.reply), notes }
+    }
+    if (late.failed || late.degraded) {
+      notes.push('could not check the pending question for a late answer before the prompt')
+    }
+  }
   // Park before dropping `pending`. If the process dies between these writes,
   // the next hook sees both copies and dedupes them; the old order could die in
   // the gap after erasing the only request/collapse/device identifiers.
@@ -903,21 +1059,45 @@ export async function handleStop(ctx: HookContext, envelope: HookEnvelope): Prom
     notes.push(`retired superseded question${swept.length > 1 ? 's' : ''} ${swept.join(', ')}`)
   }
 
-  // The harness sets this when it is already resuming us from a previous Stop
-  // decision. Pushing again here is how a question turns into nagging.
-  if (envelope.stop_hook_active === true) {
-    notes.push('already continuing from an answer; not asking again this turn')
-    return { notes }
-  }
-
   const state = readSessionState(sessionId, ctx.env)
   const pending = state.pending
   if (!pending) return { notes }
   if (pending.request_id !== undefined) {
+    const late = await pollPendingReply(ctx, pending, LATE_STOP_POLL_SECONDS)
+    if (late.reply !== null) {
+      await finishPendingAnswer(ctx, envelope, sessionId, pending, late.reply, true)
+      notes.push(`late answer from ${late.reply.device_name}: ${late.reply.text}`)
+      return { stdout: stopAnswerOutput(late.reply), notes }
+    }
     // Already live on the user's devices from an earlier Stop; asking twice for
     // one question is the nagging failure this feature exists to avoid.
-    notes.push(`already asked (${pending.request_id}); waiting for that answer`)
+    notes.push(
+      late.failed || late.degraded
+        ? `already asked (${pending.request_id}); could not check whether its answer arrived`
+        : `already asked (${pending.request_id}); waiting for that answer`,
+    )
     return { notes }
+  }
+
+  // A Stop answer may immediately produce a legitimate follow-up question.
+  // Allow that new generation, but never re-run an old pending question and
+  // never let answer continuations become an unbounded agent loop.
+  if (envelope.stop_hook_active === true) {
+    const continuation = state.continuation
+    const isNew =
+      continuation !== undefined &&
+      pending.asked_at !== undefined &&
+      pending.asked_at > continuation.answered_at
+    if (!isNew) {
+      notes.push('already continuing from an answer; not asking again this turn')
+      return { notes }
+    }
+    if (continuation.count >= MAX_CONTINUATION_COUNT) {
+      notes.push(
+        `answer continuation limit (${MAX_CONTINUATION_COUNT}) reached; leaving the question in the terminal`,
+      )
+      return { notes }
+    }
   }
   if (!ctx.config.ask_notifications.value) return { notes }
   if (!isUserAway(state, ctx.config, ctx.now(), ctx.idleSeconds())) {
@@ -935,7 +1115,7 @@ export async function handleStop(ctx: HookContext, envelope: HookEnvelope): Prom
     return { notes }
   }
   try {
-    return await escalate(ctx, envelope, sessionId, state, pending, notes)
+    return await escalate(ctx, envelope, sessionId, pending, notes)
   } finally {
     releaseQuestionPush(sessionId, ctx.env)
   }
@@ -946,7 +1126,6 @@ async function escalate(
   ctx: HookContext,
   envelope: HookEnvelope,
   sessionId: string,
-  state: SessionState,
   pending: PendingQuestion,
   notes: string[],
 ): Promise<HookOutcome> {
@@ -972,7 +1151,7 @@ async function escalate(
     windowSeconds: QUESTION_WINDOW_SECONDS,
     onSubmitted: (live) => {
       // Re-read: the drain at the top of this hook rewrote the queue, and the
-      // snapshot in `state` predates it.
+      // snapshot that entered this hook predates it.
       writeSessionState(sessionId, ctx.env, {
         ...readSessionState(sessionId, ctx.env),
         pending: {
@@ -989,59 +1168,40 @@ async function escalate(
     return { notes }
   }
 
-  // What survives replacing the pending record. `retiring` has to: dropping it
-  // is exactly the class of bug this guards against — a delivered notification
-  // whose ids no longer exist anywhere.
-  const current = readSessionState(sessionId, ctx.env)
-  const carried = {
-    ...(state.last_prompt_at !== undefined ? { last_prompt_at: state.last_prompt_at } : {}),
-    ...(current.retiring !== undefined ? { retiring: current.retiring } : {}),
-  }
-
   if (!asked.reply) {
     // Keep the pending record so a returning user's UserPromptSubmit can retire
     // the notification that is still live on their devices. `request_id` being
     // set is also what stops the next Stop pushing the same question again.
-    writeSessionState(sessionId, ctx.env, {
-      ...carried,
-      pending: {
-        ...pending,
-        request_id: asked.requestId,
-        collapse_key: asked.collapseKey,
-        device_ids: asked.devices,
-      },
-    })
-    notes.push(
-      asked.degraded
-        ? `could not reach the server to find out whether you answered; check with: notifai replies ${asked.requestId}`
-        : `no answer in time; retrieve it later with: notifai replies ${asked.requestId}`,
-    )
+    if (!asked.waited) {
+      notes.push(
+        `question sent without blocking OpenCode; retrieve the answer on the next prompt or with: notifai replies --pending`,
+      )
+    } else if (asked.userReturned) {
+      notes.push(
+        `you came back after the question was sent; returning the terminal while it stays answerable (${asked.requestId}). ` +
+          'Retrieve it with: notifai replies --pending',
+      )
+    } else {
+      notes.push(
+        asked.degraded
+          ? `could not reach the server to find out whether you answered; check with: notifai replies --pending`
+          : `no answer in time; retrieve it later with: notifai replies --pending`,
+      )
+    }
     return { notes }
   }
 
-  // Answered and closed — nothing left to retire.
-  writeSessionState(sessionId, ctx.env, carried)
-
-  await retire(
+  await finishPendingAnswer(
     ctx,
-    asked.collapseKey,
-    'Answered',
-    asked.reply.text,
-    'answered',
-    asked.requestId,
-    asked.devices,
-    sessionLabel(ctx, envelope),
+    envelope,
+    sessionId,
+    readSessionState(sessionId, ctx.env).pending!,
+    asked.reply,
+    true,
   )
   notes.push(`answer from ${asked.reply.device_name}: ${asked.reply.text}`)
   return {
-    stdout: JSON.stringify({
-      decision: 'block',
-      // Harnesses render a Stop decision under an error-ish label, so this
-      // text must read as an answer on its own rather than as a failure.
-      reason:
-        `Notifai — the user answered from ${asked.reply.device_name}: ` +
-        `"${asked.reply.text}". Continue with that answer.`,
-    }),
+    stdout: stopAnswerOutput(asked.reply),
     notes,
   }
 }

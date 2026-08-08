@@ -144,6 +144,14 @@ describe('draft building', () => {
     })
   })
 
+  it('keeps a blocking reply answerable for one hour by default', () => {
+    const config = loadConfig({ cwd: base.cwd, env: base.env })
+    const build = buildDraft(config, { title: 'Question', body: 'Deploy?', reply: true })
+    if (!build.ok) throw new Error(build.error)
+
+    expect(build.draft.reply?.expires_in_seconds).toBe(3_600)
+  })
+
   it('stamps the project from flag or project config', () => {
     const { env, cwd } = setup({ projectToml: 'project = "my-app"\n' })
     const config = loadConfig({ cwd, env })
