@@ -42,8 +42,8 @@ for (const entry of packages) {
   requireValue(manifest.engines?.node === '>=20', `${manifest.name}: Node support must be exactly >=20`)
   requireValue(manifest.publishConfig?.access === 'public', `${manifest.name}: publishConfig.access must be public`)
   requireValue(manifest.repository?.directory === directory, `${manifest.name}: repository.directory must be ${directory}`)
-  requireValue(manifest.homepage === 'https://github.com/RafaelVidaurre/notifai#readme', `${manifest.name}: homepage is missing or unexpected`)
-  requireValue(manifest.bugs?.url === 'https://github.com/RafaelVidaurre/notifai/issues', `${manifest.name}: bugs URL is missing or unexpected`)
+  requireValue(manifest.homepage === 'https://github.com/Raidiant-io/notifai#readme', `${manifest.name}: homepage is missing or unexpected`)
+  requireValue(manifest.bugs?.url === 'https://github.com/Raidiant-io/notifai/issues', `${manifest.name}: bugs URL is missing or unexpected`)
   requireValue(
     readFileSync(path.join(root, directory, 'LICENSE'), 'utf8') === rootLicense,
     `${manifest.name}: package LICENSE must exactly match the repository LICENSE`,
@@ -96,7 +96,7 @@ const cliCommandsDist = readFileSync(path.join(root, 'apps/cli/dist/commands.js'
 const extractSkillsSource = (contents) => contents.match(/SKILLS_SOURCE\s*=\s*['"]([^'"]+)['"]/)?.[1]
 const sourceSkillsSource = extractSkillsSource(cliCommandsSource)
 const distSkillsSource = extractSkillsSource(cliCommandsDist)
-const expectedSkillsSource = `RafaelVidaurre/notifai#v${cli.version}`
+const expectedSkillsSource = `Raidiant-io/notifai#v${cli.version}`
 requireValue(sourceSkillsSource === expectedSkillsSource, `CLI source SKILLS_SOURCE must be ${expectedSkillsSource}`)
 requireValue(distSkillsSource === expectedSkillsSource, `CLI dist SKILLS_SOURCE must be ${expectedSkillsSource}`)
 requireValue(

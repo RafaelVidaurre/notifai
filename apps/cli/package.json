@@ -31,16 +31,16 @@
   },
   "license": "Apache-2.0",
   "author": "Rafael Vidaurre",
-  "homepage": "https://github.com/RafaelVidaurre/notifai#readme",
+  "homepage": "https://github.com/Raidiant-io/notifai#readme",
   "bugs": {
-    "url": "https://github.com/RafaelVidaurre/notifai/issues"
+    "url": "https://github.com/Raidiant-io/notifai/issues"
   },
   "publishConfig": {
     "access": "public"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/RafaelVidaurre/notifai.git",
+    "url": "git+https://github.com/Raidiant-io/notifai.git",
     "directory": "apps/cli"
   },
   "keywords": [

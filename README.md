@@ -61,6 +61,6 @@ sign-in, optional harness hooks, and device readiness. `notifai init --skills`
 delegates to the native `npx skills` flow, which lets a human choose project or
 global scope and owns placement, links, provenance, and updates. The skill is
 from the immutable public tag `v0.1.8`; the underlying installer source is
-`RafaelVidaurre/notifai#v0.1.8` (`#` selects a Git ref). For unattended use,
+`Raidiant-io/notifai#v0.1.8` (`#` selects a Git ref). For unattended use,
 choose the scope explicitly: `notifai init --skills --skills-scope project` or
 `notifai init --skills --skills-scope global`.

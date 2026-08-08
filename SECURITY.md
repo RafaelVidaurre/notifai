@@ -3,7 +3,7 @@
 ## Reporting a vulnerability
 
 Please report security issues privately through GitHub's [private
-vulnerability reporting](https://github.com/RafaelVidaurre/notifai/security/advisories/new)
+vulnerability reporting](https://github.com/Raidiant-io/notifai/security/advisories/new)
 on this repository. Do not open a public issue for a suspected
 vulnerability.
 

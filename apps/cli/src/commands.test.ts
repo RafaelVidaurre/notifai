@@ -1020,9 +1020,9 @@ describe('init', () => {
       name: 'notifai',
       scope,
       path: path.join(cwd, '.agents', 'skills', 'notifai'),
-      source: 'RafaelVidaurre/notifai',
+      source: 'Raidiant-io/notifai',
       sourceType: 'github',
-      sourceUrl: 'https://github.com/RafaelVidaurre/notifai.git',
+      sourceUrl: 'https://github.com/Raidiant-io/notifai.git',
       ref: 'v0.1.8',
     }
   }
@@ -1125,7 +1125,7 @@ describe('init', () => {
   })
 
   it('pins the skill installer to the tagged public release syntax', () => {
-    expect(SKILLS_SOURCE).toBe('RafaelVidaurre/notifai#v0.1.8')
+    expect(SKILLS_SOURCE).toBe('Raidiant-io/notifai#v0.1.8')
     expect(SKILLS_SOURCE).not.toContain('@v')
   })
 
@@ -1145,9 +1145,9 @@ describe('init', () => {
             name: 'notifai',
             scope,
             path: path.join(cwd, '.agents', 'skills', 'notifai'),
-            source: 'RafaelVidaurre/notifai',
+            source: 'Raidiant-io/notifai',
             sourceType: 'github',
-            sourceUrl: 'https://github.com/RafaelVidaurre/notifai.git',
+            sourceUrl: 'https://github.com/Raidiant-io/notifai.git',
             ref: 'v0.1.8',
           },
         ],
@@ -1824,9 +1824,9 @@ describe('asking before the hooks have ever run', () => {
                   name: 'notifai',
                   scope,
                   path: path.join(cwd, 'global-skills', 'notifai'),
-                  source: 'RafaelVidaurre/notifai',
+                  source: 'Raidiant-io/notifai',
                   sourceType: 'github',
-                  sourceUrl: 'https://github.com/RafaelVidaurre/notifai.git',
+                  sourceUrl: 'https://github.com/Raidiant-io/notifai.git',
                   ref: 'v0.1.8',
                 },
               ]

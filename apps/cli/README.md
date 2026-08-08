@@ -77,6 +77,6 @@ Everything useful is possible non-interactively, so an agent never
 reaches a prompt and hangs.
 
 Source, issues and the security policy:
-<https://github.com/RafaelVidaurre/notifai>
+<https://github.com/Raidiant-io/notifai>
 
 Apache-2.0.

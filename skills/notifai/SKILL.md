@@ -321,7 +321,7 @@ not enough. The request id is saved in machine-local state, so a partial run
 rechecks the same notification instead of sending another one.
 `--skills` installs this skill from the immutable public `v0.1.8` tag. The
 source uses the skills installer's ref syntax
-`RafaelVidaurre/notifai#v0.1.8`; `owner/repo@name` means a skill selector, not
+`Raidiant-io/notifai#v0.1.8`; `owner/repo@name` means a skill selector, not
 a Git ref. In an interactive init, the native `npx skills` UI owns the
 project-local versus machine-global choice, placement, links, provenance, and
 updates; `notifai` waits for it and then resumes the remaining setup.
