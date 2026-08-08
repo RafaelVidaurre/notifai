@@ -179,7 +179,7 @@ describe('command contracts', () => {
     expect(await accessStatusCommand(makeDeps(io, client), {})).toBe(EXIT.failed)
     expect(io.outLines).toEqual([
       'No active plan or temporary Alpha access for this account.',
-      'next: Ask a platform administrator to grant temporary Alpha access, then retry.',
+      'next: Open https://test.notifai.invalid/support to request Alpha access, then retry.',
     ])
   })
 
@@ -1562,7 +1562,7 @@ describe('init', () => {
     expect(io.outLines.join('\n')).toContain('Next: Delivery proof')
   })
 
-  it('does not claim proof for a macOS-only setup whose receipt bridge is unavailable', async () => {
+  it('treats macOS-only delivery proof as an honest non-blocking caveat', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-macos-proof-'))
     const io = new CapturedIo()
     let submitCalls = 0
@@ -1583,10 +1583,66 @@ describe('init', () => {
       env: { XDG_CONFIG_HOME: path.join(cwd, 'config'), XDG_STATE_HOME: path.join(cwd, 'state') },
     }
 
-    expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.failed)
+    expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.ok)
     expect(submitCalls).toBe(0)
-    expect(io.outLines.join('\n')).toContain('Next: Delivery proof')
-    expect(io.outLines.join('\n')).toContain('no supported macOS receipt bridge')
+    const out = io.outLines.join('\n')
+    expect(out).toContain('All set.')
+    expect(out).toContain('receipt proof needs an iPhone in this release')
+    expect(out).not.toContain('Next: Delivery proof')
+    expect(out).not.toMatch(/Companion Receipt observed/i)
+
+    // doctor must render the same non-blocking state (not FAIL / not a Next:).
+    const doctorIo = new CapturedIo()
+    expect(
+      await doctorCommand(
+        {
+          ...makeDeps(doctorIo, client),
+          cwd,
+          env: { XDG_CONFIG_HOME: path.join(cwd, 'config'), XDG_STATE_HOME: path.join(cwd, 'state') },
+        },
+        {},
+      ),
+    ).toBe(EXIT.ok)
+    const doctorOut = doctorIo.outLines.join('\n')
+    expect(doctorOut).toMatch(/ok\s+Delivery proof:/)
+    expect(doctorOut).toContain('receipt proof needs an iPhone')
+    expect(doctorOut).not.toMatch(/FAIL\s+Delivery proof:/)
+  })
+
+  it('stops login when the approval page reports no Alpha access', async () => {
+    const io = new CapturedIo()
+    let now = 0
+    let polls = 0
+    const client = {
+      beginPairing: async () => ({
+        pairing_id: 'pair_no_plan',
+        code: 'NOPE-PLAN',
+        approve_url: 'https://test.notifai.invalid/approve?code=NOPE-PLAN',
+        expires_at: new Date(60_000).toISOString(),
+        poll_interval_seconds: 1,
+      }),
+      pollPairing: async () => {
+        polls += 1
+        return {
+          status: 'no_active_plan' as const,
+          next_action: 'Open https://test.notifai.invalid/support to request Alpha access, then retry.',
+        }
+      },
+    } as unknown as ApiClient
+    const deps = {
+      ...makeDeps(io, client),
+      now: () => now,
+      sleep: async (milliseconds: number) => {
+        now += milliseconds
+      },
+    }
+
+    expect(await loginCommand(deps, { open: false })).toBe(EXIT.auth)
+    expect(polls).toBe(1)
+    expect(io.errLines.join('\n')).toContain('no active plan or temporary Alpha access')
+    expect(io.errLines.join('\n')).toContain(
+      'Open https://test.notifai.invalid/support to request Alpha access, then retry.',
+    )
   })
 
   it('treats a revoked credential as the one blocker and points back to pairing', async () => {

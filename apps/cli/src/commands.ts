@@ -253,6 +253,16 @@ export async function loginCommand(
       deps.io.err('Pairing was denied from the dashboard.')
       return EXIT.auth
     }
+    if (poll.status === 'no_active_plan') {
+      const next =
+        poll.next_action ??
+        `Open ${baseUrl.replace(/\/$/, '')}/support to request Alpha access, then retry.`
+      spinner?.error('Account has no Alpha access')
+      deps.io.err('This account has no active plan or temporary Alpha access.')
+      deps.io.err(`next: ${next}`)
+      deps.io.err('After access is granted, run `notifai login` again.')
+      return EXIT.auth
+    }
     if (poll.status === 'expired') break
     spinner?.message('Waiting for approval…')
   }
@@ -312,8 +322,9 @@ export async function accessStatusCommand(
       return access.status === 'active' ? EXIT.ok : EXIT.failed
     }
     if (access.status === 'no_active_plan') {
+      const supportUrl = `${authed.baseUrl.replace(/\/$/, '')}/support`
       deps.io.out('No active plan or temporary Alpha access for this account.')
-      deps.io.out('next: Ask a platform administrator to grant temporary Alpha access, then retry.')
+      deps.io.out(`next: Open ${supportUrl} to request Alpha access, then retry.`)
       return EXIT.failed
     }
     const expiry = access.expires_at ? ` until ${access.expires_at}` : ''
@@ -2511,16 +2522,18 @@ async function setupProofState(
 
   const ios = readyIosDevices(devices)
   if (ios.length === 0) {
+    // Honest non-blocking caveat: notifications can reach the Mac; only the
+    // receipt proof path is unavailable in this release. Never emit a Next:
+    // step the user cannot satisfy, and never claim unobserved proof.
     return {
       id: 'proof',
       title: 'Delivery proof',
-      status: 'gap',
+      status: 'optional-gap',
       detail:
-        'blocked — the current macOS notification path does not emit Companion Receipts, so this CLI cannot prove receipt on a macOS-only setup',
+        'unprovable in this release — notifications can reach your Mac, but the macOS path does not emit Companion Receipts (the app delivery confirmation); receipt proof needs an iPhone',
       remedy: {
         by: 'user-elsewhere',
-        summary:
-          'pair a receipt-capable iPhone build; no supported macOS receipt bridge is available in this release',
+        summary: 'receipt proof needs an iPhone in this release (notifications still reach this Mac)',
       },
     }
   }
